@@ -156,10 +156,36 @@ function AnalysisPage() {
           {pose && pose.annotated_images.length > 0 && (
             <div className="card pose-viewer">
               <h3 className="card-title">骨格解析ビュー</h3>
-              <img
-                src={`data:image/jpeg;base64,${pose.annotated_images[activeFrame]}`}
-                alt={`解析フレーム ${activeFrame + 1}（${pose.phases[activeFrame] ?? ''}）`}
-              />
+              <div className="pose-stage">
+                <img
+                  src={`data:image/jpeg;base64,${pose.annotated_images[activeFrame]}`}
+                  alt={`解析フレーム ${activeFrame + 1}（${pose.phases[activeFrame] ?? ''}）`}
+                />
+                {result.ball_speed && (
+                  <div className="hud-chip bottom-left">
+                    <div className="hud-label">推定初速</div>
+                    <div className="hud-value">
+                      {result.ball_speed.speed_kmh} <span className="hud-unit">km/h ※概算</span>
+                    </div>
+                  </div>
+                )}
+                {result.kick_angle_range && (
+                  <div className="hud-chip top-left">
+                    <div className="hud-label">蹴り足の膝角度</div>
+                    <div className="hud-value">
+                      {result.kick_angle_range.min}°<span className="hud-unit">〜</span>{result.kick_angle_range.max}°
+                    </div>
+                  </div>
+                )}
+                {pose.phases[activeFrame] && (
+                  <div className="hud-chip top-right">
+                    <div className="hud-label">フェーズ</div>
+                    <div className="hud-value" style={{ fontSize: '0.95rem' }}>
+                      {pose.phases[activeFrame]}
+                    </div>
+                  </div>
+                )}
+              </div>
               {pose.annotated_images.length > 1 && (
                 <div className="frame-strip">
                   {pose.annotated_images.map((img, i) => (

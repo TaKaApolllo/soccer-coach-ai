@@ -32,6 +32,9 @@ SKILL_BY_ANALYSIS_TYPE = {
 
 SKILL_AXES = ["シュート", "パス", "ドリブル", "ポジショニング", "フィジカル"]
 
+# 戦術分析で記録するスコア軸（成長記録用）
+TACTICAL_AXES = ["コンパクトネス", "パス選択", "守備ブロック", "攻撃の幅"]
+
 ACHIEVEMENT_RULES = [
     # (code, title, description, 判定関数への引数: skill, threshold)
     ("first_analysis", "はじめの一歩", "初めての AI 解析を完了", None, 1),
@@ -194,8 +197,8 @@ def skill_radar(days: int = 30) -> dict:
     }
 
 
-def skill_trend(months: int = 8) -> dict:
-    """月ごとのスキル平均（推移チャート用）"""
+def _trend(axes: List[str], months: int) -> dict:
+    """月ごとのスコア平均（推移チャート用の共通処理）"""
     start = (datetime.now() - timedelta(days=months * 31)).isoformat()
     with _lock, _connect() as conn:
         rows = conn.execute(
@@ -210,7 +213,7 @@ def skill_trend(months: int = 8) -> dict:
 
     months_sorted = sorted(buckets.keys())
     series = {}
-    for axis in SKILL_AXES:
+    for axis in axes:
         points = []
         for m in months_sorted:
             values = buckets[m].get(axis)
@@ -218,7 +221,46 @@ def skill_trend(months: int = 8) -> dict:
         if any(p is not None for p in points):
             series[axis] = points
 
+    # どの軸にもデータがない月は落とす
+    if series:
+        keep = [
+            i for i, m in enumerate(months_sorted)
+            if any(pts[i] is not None for pts in series.values())
+        ]
+        months_sorted = [months_sorted[i] for i in keep]
+        series = {k: [v[i] for i in keep] for k, v in series.items()}
+    else:
+        months_sorted = []
+
     return {"months": months_sorted, "series": series}
+
+
+def skill_trend(months: int = 8) -> dict:
+    """月ごとの技術スキル平均"""
+    return _trend(SKILL_AXES, months)
+
+
+def tactical_trend(months: int = 8) -> dict:
+    """月ごとの戦術スコア平均（コンパクトネス・パス選択など）"""
+    return _trend(TACTICAL_AXES, months)
+
+
+def latest_tactical_scores(limit: int = 2) -> List[dict]:
+    """戦術軸ごとの直近スコア（成長コメント用）"""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT skill, score, recorded_at FROM skill_scores ORDER BY recorded_at DESC LIMIT 200",
+        ).fetchall()
+
+    result = []
+    for axis in TACTICAL_AXES:
+        values = [
+            {"score": r["score"], "recorded_at": r["recorded_at"]}
+            for r in rows if r["skill"] == axis
+        ][:limit]
+        if values:
+            result.append({"skill": axis, "records": values})
+    return result
 
 
 # ----------------------------------------------------------------------

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import RadarChart from '../components/RadarChart'
 import TrendChart from '../components/TrendChart'
 import { api } from '../services/api'
-import { AnalysisHistoryItem, GrowthSummary, TrendData } from '../types'
+import { AnalysisHistoryItem, GrowthSummary, TacticalTrendData, TrendData } from '../types'
 
 const TYPE_NAMES: Record<string, string> = {
   kick: 'キックフォーム分析',
@@ -17,14 +17,21 @@ const TYPE_NAMES: Record<string, string> = {
 function GrowthPage() {
   const [summary, setSummary] = useState<GrowthSummary | null>(null)
   const [trend, setTrend] = useState<TrendData | null>(null)
+  const [tacticalTrend, setTacticalTrend] = useState<TacticalTrendData | null>(null)
   const [history, setHistory] = useState<AnalysisHistoryItem[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    Promise.all([api.getGrowthSummary(), api.getGrowthTrend(), api.getHistory()])
-      .then(([s, t, h]) => {
+    Promise.all([
+      api.getGrowthSummary(),
+      api.getGrowthTrend(),
+      api.getTacticalTrend(),
+      api.getHistory()
+    ])
+      .then(([s, t, tt, h]) => {
         setSummary(s)
         setTrend(t)
+        setTacticalTrend(tt)
         setHistory(h.analyses)
       })
       .catch((err) => console.error('Failed to load growth data:', err))
@@ -60,8 +67,18 @@ function GrowthPage() {
       <p className="section-label">成長を『数値』で実感する</p>
 
       <div className="card">
-        <h3 className="card-title">スキル推移</h3>
+        <h3 className="card-title">スキル推移（技術）</h3>
         {trend && <TrendChart data={trend} />}
+      </div>
+
+      <div className="card">
+        <h3 className="card-title">戦術スコア推移</h3>
+        {tacticalTrend && <TrendChart data={tacticalTrend} />}
+        {tacticalTrend?.growth_comments.map((c, i) => (
+          <p key={i} className="note-text" style={{ color: 'var(--accent)', fontSize: '0.85rem' }}>
+            🤖 {c}
+          </p>
+        ))}
       </div>
 
       {summary && summary.achievements.length > 0 && (

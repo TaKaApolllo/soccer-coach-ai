@@ -6,6 +6,7 @@ import {
   FormationResponse,
   GrowthSummary,
   PoseAnalysisResponse,
+  TacticalTrendData,
   TrendData
 } from '../types'
 
@@ -41,12 +42,14 @@ export const api = {
   async analyzeFormation(
     file: File,
     teamAName?: string,
-    teamBName?: string
+    teamBName?: string,
+    focusTeam = 0
   ): Promise<FormationResponse> {
     const formData = new FormData()
     formData.append('file', file)
     if (teamAName) formData.append('team_a_name', teamAName)
     if (teamBName) formData.append('team_b_name', teamBName)
+    formData.append('focus_team', String(focusTeam))
 
     const response = await axios.post<FormationResponse>(
       `${API_BASE}/formation/analyze`,
@@ -111,6 +114,14 @@ export const api = {
   async getGrowthTrend(months = 8): Promise<TrendData> {
     const response = await axios.get<TrendData>(
       `${API_BASE}/growth/trend`,
+      { params: { months } }
+    )
+    return response.data
+  },
+
+  async getTacticalTrend(months = 8): Promise<TacticalTrendData> {
+    const response = await axios.get<TacticalTrendData>(
+      `${API_BASE}/growth/tactical-trend`,
       { params: { months } }
     )
     return response.data

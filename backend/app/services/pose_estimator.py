@@ -355,54 +355,142 @@ class PoseEstimator:
     # ------------------------------------------------------------------
 
     def _draw_skeleton(self, frame: np.ndarray, pts: dict, angles: dict) -> np.ndarray:
-        overlay = frame.copy()
+        """モックアップ風の AR オーバーレイを描画
 
-        # グロー（太い半透明線）→ 本線 の2層でネオン風に
+        - 3層グロー + シアン寄りの本線によるネオンスケルトン
+        - 主要関節の破線サークルと角度円弧
+        - リーダー線付きの半透明角度チップ
+        """
+        h, w = frame.shape[:2]
+        scale = max(0.6, min(w, h) / 720.0)
+
+        # --- グロー（2層の半透明太線） ---
+        overlay = frame.copy()
         for a, b in SKELETON_CONNECTIONS:
             if a in pts and b in pts:
                 pa = (int(pts[a][0]), int(pts[a][1]))
                 pb = (int(pts[b][0]), int(pts[b][1]))
-                cv2.line(overlay, pa, pb, NEON_GREEN_GLOW, 7, cv2.LINE_AA)
+                cv2.line(overlay, pa, pb, NEON_GREEN_GLOW, int(10 * scale), cv2.LINE_AA)
+        frame = cv2.addWeighted(overlay, 0.25, frame, 0.75, 0)
 
+        overlay = frame.copy()
+        for a, b in SKELETON_CONNECTIONS:
+            if a in pts and b in pts:
+                pa = (int(pts[a][0]), int(pts[a][1]))
+                pb = (int(pts[b][0]), int(pts[b][1]))
+                cv2.line(overlay, pa, pb, NEON_GREEN, int(5 * scale), cv2.LINE_AA)
         frame = cv2.addWeighted(overlay, 0.35, frame, 0.65, 0)
 
+        # --- 本線 ---
         for a, b in SKELETON_CONNECTIONS:
             if a in pts and b in pts:
                 pa = (int(pts[a][0]), int(pts[a][1]))
                 pb = (int(pts[b][0]), int(pts[b][1]))
-                cv2.line(frame, pa, pb, NEON_GREEN, 2, cv2.LINE_AA)
+                cv2.line(frame, pa, pb, NEON_GREEN, max(2, int(2 * scale)), cv2.LINE_AA)
 
+        # --- 関節点（白コア + ネオンリング） ---
         for idx in LANDMARK_NAMES:
             if idx in pts:
                 p = (int(pts[idx][0]), int(pts[idx][1]))
-                cv2.circle(frame, p, 4, NEON_GREEN, -1, cv2.LINE_AA)
-                cv2.circle(frame, p, 2, JOINT_COLOR, -1, cv2.LINE_AA)
+                cv2.circle(frame, p, int(6 * scale), NEON_GREEN, 1, cv2.LINE_AA)
+                cv2.circle(frame, p, int(3 * scale), JOINT_COLOR, -1, cv2.LINE_AA)
 
-        # 主要関節に角度バッジを描画
-        badge_targets = {
-            "left_knee": 25, "right_knee": 26,
-            "left_hip": 23, "right_hip": 24,
-        }
-        for name, idx in badge_targets.items():
-            if name in angles and idx in pts:
-                self._draw_angle_badge(frame, pts[idx], f"{angles[name]:.0f}°")
+        # --- 主要関節: 破線サークル + 角度円弧 + リーダー線チップ ---
+        arc_joints = [
+            ("left_knee", 25, 23, 27),
+            ("right_knee", 26, 24, 28),
+            ("left_hip", 23, 11, 25),
+            ("right_hip", 24, 12, 26),
+            ("left_elbow", 13, 11, 15),
+            ("right_elbow", 14, 12, 16),
+        ]
+        for name, joint, parent, child in arc_joints:
+            if name not in angles or joint not in pts:
+                continue
+            jp = pts[joint]
+            self._draw_dashed_circle(frame, jp, int(16 * scale), NEON_GREEN)
+            if parent in pts and child in pts:
+                self._draw_angle_arc(frame, jp, pts[parent], pts[child], int(24 * scale))
+            # 膝と股関節はチップも表示（肘は円弧のみで情報過多を避ける）
+            if "knee" in name or "hip" in name:
+                self._draw_angle_chip(frame, jp, f"{angles[name]:.0f}", scale)
 
+        # 体幹の傾きは肩の上にチップ表示
+        # （OpenCV は非 ASCII を描画できないためラベルは英字）
         if "torso_lean" in angles and 11 in pts and 12 in pts:
-            mid = (int((pts[11][0] + pts[12][0]) / 2), int((pts[11][1] + pts[12][1]) / 2) - 30)
-            self._draw_angle_badge(frame, mid, f"{angles['torso_lean']:.0f}°")
+            mid = ((pts[11][0] + pts[12][0]) / 2, (pts[11][1] + pts[12][1]) / 2 - 40 * scale)
+            self._draw_angle_chip(frame, mid, f"LEAN {angles['torso_lean']:.0f}", scale, leader=False)
 
         return frame
 
-    def _draw_angle_badge(self, frame: np.ndarray, pos, text: str) -> None:
-        x, y = int(pos[0]) + 10, int(pos[1]) - 10
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+    @staticmethod
+    def _draw_dashed_circle(frame: np.ndarray, center, radius: int, color, dashes: int = 12) -> None:
+        """関節を囲む破線サークル"""
+        cx, cy = int(center[0]), int(center[1])
+        for i in range(dashes):
+            a0 = i * (360 / dashes)
+            a1 = a0 + (360 / dashes) * 0.55
+            cv2.ellipse(frame, (cx, cy), (radius, radius), 0, a0, a1, color, 1, cv2.LINE_AA)
+
+    @staticmethod
+    def _draw_angle_arc(frame: np.ndarray, joint, parent, child, radius: int) -> None:
+        """関節角度を可視化する円弧（2本の骨の間を塗る）"""
+        a_parent = math.degrees(math.atan2(parent[1] - joint[1], parent[0] - joint[0]))
+        a_child = math.degrees(math.atan2(child[1] - joint[1], child[0] - joint[0]))
+        start, end = a_parent % 360, a_child % 360
+        sweep = (end - start) % 360
+        if sweep > 180:
+            start, end = end, start + (360 - sweep)
+        else:
+            end = start + sweep
+
+        overlay = frame.copy()
+        cv2.ellipse(overlay, (int(joint[0]), int(joint[1])), (radius, radius),
+                    0, start, end, NEON_GREEN, -1, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, dst=frame)
+        cv2.ellipse(frame, (int(joint[0]), int(joint[1])), (radius, radius),
+                    0, start, end, NEON_GREEN, 1, cv2.LINE_AA)
+
+    def _draw_angle_chip(self, frame: np.ndarray, pos, text: str,
+                         scale: float, leader: bool = True) -> None:
+        """リーダー線付きの半透明角度チップ（モックアップの注釈風）
+
+        OpenCV の putText は「°」を描画できないため、
+        度記号はテキストの右肩に小円として手描きする。
+        """
         h, w = frame.shape[:2]
-        x = min(max(0, x), max(0, w - tw - 12))
-        y = min(max(th + 10, y), h - 6)
-        cv2.rectangle(frame, (x - 4, y - th - 6), (x + tw + 8, y + 4), ANGLE_BADGE_BG, -1)
-        cv2.rectangle(frame, (x - 4, y - th - 6), (x + tw + 8, y + 4), NEON_GREEN_GLOW, 1)
-        cv2.putText(frame, text, (x + 2, y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                    ANGLE_BADGE_TEXT, 1, cv2.LINE_AA)
+        font_scale = 0.5 * scale
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+        deg_r = max(2, int(2 * scale))          # 度記号の半径
+        deg_space = deg_r * 2 + 3               # 度記号ぶんの余白
+        pad = int(6 * scale)
+
+        # チップはデフォルトで右上方向へオフセット。はみ出す場合は左へ反転
+        offset = int(34 * scale)
+        cx = int(pos[0]) + offset
+        cy = int(pos[1]) - offset
+        if cx + tw + deg_space + pad * 2 > w:
+            cx = int(pos[0]) - offset - tw - deg_space - pad * 2
+        cx = max(2, cx)
+        cy = max(th + pad + 2, min(cy, h - pad - 2))
+
+        x1, y1 = cx, cy - th - pad
+        x2, y2 = cx + tw + deg_space + pad * 2, cy + pad
+
+        if leader:
+            anchor_x = x1 if abs(x1 - pos[0]) < abs(x2 - pos[0]) else x2
+            cv2.line(frame, (int(pos[0]), int(pos[1])), (anchor_x, (y1 + y2) // 2),
+                     NEON_GREEN, 1, cv2.LINE_AA)
+
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), ANGLE_BADGE_BG, -1)
+        cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, dst=frame)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), NEON_GREEN_GLOW, 1, cv2.LINE_AA)
+        cv2.putText(frame, text, (x1 + pad, y2 - pad), cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale, ANGLE_BADGE_TEXT, 1, cv2.LINE_AA)
+        # 度記号（右肩の小円）
+        cv2.circle(frame, (x1 + pad + tw + deg_r + 2, y1 + pad + deg_r),
+                   deg_r, ANGLE_BADGE_TEXT, 1, cv2.LINE_AA)
 
     @staticmethod
     def _to_base64(frame: np.ndarray) -> str:
@@ -410,3 +498,86 @@ class PoseEstimator:
         if not ok:
             raise ValueError("画像のエンコードに失敗しました")
         return base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    # ------------------------------------------------------------------
+    # ボール初速の推定（概算）
+    # ------------------------------------------------------------------
+
+    def estimate_ball_speed(
+        self,
+        frames_bgr: List[np.ndarray],
+        frame_indices: List[int],
+        fps: float,
+        poses: List[dict],
+        person_height_m: float = 1.7,
+    ) -> Optional[dict]:
+        """連続フレーム間のボール移動量から初速を概算する
+
+        スケールは骨格の身長（鼻〜足首のピクセル距離）を
+        person_height_m とみなして校正する。校正・検出とも
+        粗い前提のため「推定値」として扱うこと。
+        """
+        if fps <= 0 or len(frames_bgr) < 2:
+            return None
+
+        # 骨格からピクセル身長を推定（検出できたフレームの中央値）
+        px_heights = []
+        for p in poses:
+            lms = {lm["name"]: lm for lm in p.get("landmarks", [])}
+            if "nose" in lms and ("left_ankle" in lms or "right_ankle" in lms):
+                ankle = lms.get("left_ankle") or lms.get("right_ankle")
+                h_img = frames_bgr[0].shape[0]
+                px = abs(ankle["y"] - lms["nose"]["y"]) * h_img / 0.88  # 鼻〜足首 ≈ 身長の88%
+                if px > 20:
+                    px_heights.append(px)
+        if not px_heights:
+            return None
+        m_per_px = person_height_m / float(np.median(px_heights))
+
+        # 各フレームのボール位置（白い円形ブロブ）
+        centers = []
+        for frame in frames_bgr:
+            centers.append(self._find_ball_center(frame))
+
+        # 連続する2フレームでともに検出できた区間の最大速度
+        best_kmh = None
+        for i in range(len(centers) - 1):
+            c0, c1 = centers[i], centers[i + 1]
+            if c0 is None or c1 is None:
+                continue
+            dt = (frame_indices[i + 1] - frame_indices[i]) / fps
+            if dt <= 0:
+                continue
+            dist_m = math.hypot(c1[0] - c0[0], c1[1] - c0[1]) * m_per_px
+            kmh = dist_m / dt * 3.6
+            if best_kmh is None or kmh > best_kmh:
+                best_kmh = kmh
+
+        if best_kmh is None or not (5.0 <= best_kmh <= 160.0):
+            return None
+        return {"speed_kmh": round(best_kmh), "approximate": True}
+
+    @staticmethod
+    def _find_ball_center(frame: np.ndarray) -> Optional[tuple]:
+        """フレーム下半分から白い円形ブロブ（ボール）を探す"""
+        h, w = frame.shape[:2]
+        roi = frame[h // 3:, :]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        white = cv2.inRange(hsv, (0, 0, 170), (180, 70, 255))
+        contours, _ = cv2.findContours(white, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+        best = None
+        best_score = 0.0
+        for c in contours:
+            area = cv2.contourArea(c)
+            if not (20 <= area <= (h * w) * 0.01):
+                continue
+            peri = cv2.arcLength(c, True)
+            if peri == 0:
+                continue
+            circularity = 4 * np.pi * area / (peri * peri)
+            if circularity > max(0.65, best_score):
+                x, y, bw, bh = cv2.boundingRect(c)
+                best_score = circularity
+                best = (x + bw / 2, y + bh / 2 + h // 3)
+        return best

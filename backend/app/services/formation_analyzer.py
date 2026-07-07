@@ -255,8 +255,22 @@ class FormationAnalyzer:
             group_sorted = sorted(group, key=lambda p: p.y)
             k = len(group_sorted)
             ys = np.linspace(0.5, 0.5, 1) if k == 1 else np.linspace(0.12, 0.88, k)
-            for pl, y in zip(group_sorted, ys):
-                pl.role = role
+            for pos_in_line, (pl, y) in enumerate(zip(group_sorted, ys)):
+                pl.role = self._detailed_role(role, pos_in_line, k)
                 pl.line = li
                 pl.snapped_x = float(depths[li])
                 pl.snapped_y = float(y)
+
+    @staticmethod
+    def _detailed_role(base_role: str, pos_in_line: int, line_size: int) -> str:
+        """ライン内の位置（タッチライン側か中央か）から詳細ロールを推定"""
+        if base_role not in ("DF", "MF", "FW") or line_size <= 1:
+            return {"DF": "CB", "MF": "CM", "FW": "CF"}.get(base_role, base_role)
+
+        is_wide = pos_in_line == 0 or pos_in_line == line_size - 1
+        if base_role == "DF":
+            return "SB" if (is_wide and line_size >= 4) else "CB"
+        if base_role == "MF":
+            return "SH" if (is_wide and line_size >= 4) else "CM"
+        # FW
+        return "WG" if (is_wide and line_size >= 3) else "CF"

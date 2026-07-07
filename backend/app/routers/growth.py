@@ -60,6 +60,33 @@ async def growth_trend(months: int = 8):
     return db.skill_trend(months=months)
 
 
+@router.get("/growth/tactical-trend")
+async def growth_tactical_trend(months: int = 8):
+    """月次の戦術スコア推移 + AI 成長コメント"""
+    trend = db.tactical_trend(months=months)
+
+    # 直近2回の比較から成長コメントを生成
+    comments = []
+    for entry in db.latest_tactical_scores(limit=2):
+        records = entry["records"]
+        if len(records) >= 2:
+            delta = records[0]["score"] - records[1]["score"]
+            if delta >= 5:
+                comments.append(
+                    f"{entry['skill']}が前回から +{delta} 向上しています。練習の成果が出ています。"
+                )
+            elif delta <= -5:
+                comments.append(
+                    f"{entry['skill']}が前回から {delta} 低下しています。次の練習でテーマにしましょう。"
+                )
+    if not comments and trend["months"]:
+        comments.append("戦術スコアは安定しています。解析を続けて変化を追いかけましょう。")
+    if not trend["months"]:
+        comments.append("まだ戦術分析の記録がありません。戦術ボードから試合映像を解析してみましょう。")
+
+    return {**trend, "growth_comments": comments}
+
+
 @router.get("/growth/achievements")
 async def growth_achievements():
     """達成バッジ一覧"""

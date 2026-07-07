@@ -27,32 +27,35 @@ UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file
 
 
 def _load_frames(file_path: str, max_frames: int = 8):
-    """アップロードファイルから解析用フレーム (BGR) を取り出す"""
+    """アップロードファイルから解析用フレーム (BGR) とインデックス・fps を取り出す"""
     if video_processor.is_video(file_path):
         cap = cv2.VideoCapture(file_path)
         if not cap.isOpened():
             raise ValueError("動画ファイルを開けません")
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         indices = (
             list(range(total))
             if total <= max_frames
             else [int(i * total / max_frames) for i in range(max_frames)]
         )
         frames = []
+        kept_indices = []
         for idx in indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ok, frame = cap.read()
             if ok:
                 frames.append(frame)
+                kept_indices.append(idx)
         cap.release()
         if not frames:
             raise ValueError("動画からフレームを取得できませんでした")
-        return frames
+        return frames, kept_indices, fps
 
     img = cv2.imread(file_path)
     if img is None:
         raise ValueError("画像ファイルを開けません")
-    return [img]
+    return [img], [0], 0.0
 
 
 @router.post("/pose/analyze")
@@ -83,7 +86,7 @@ async def analyze_pose(
         raise HTTPException(status_code=500, detail=f"ファイルの保存に失敗しました: {e}")
 
     try:
-        frames = _load_frames(file_path)
+        frames, frame_indices, fps = _load_frames(file_path)
     except ValueError as e:
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -114,10 +117,31 @@ async def analyze_pose(
 
     score = pose_result.get("score") if pose_detected else ai_feedback.get("score")
 
+    # HUD 表示用の計測値: ボール初速（動画のみ・概算）と蹴り足の膝角度レンジ
+    ball_speed = None
+    kick_angle_range = None
+    if pose_detected:
+        if fps > 0:
+            try:
+                ball_speed = pose_estimator.estimate_ball_speed(
+                    frames, frame_indices, fps, pose_result["frames"]
+                )
+            except Exception:
+                ball_speed = None
+        knee_angles = [
+            min(a for a in (f["angles"].get("left_knee"), f["angles"].get("right_knee")) if a is not None)
+            for f in pose_result["frames"]
+            if f["angles"].get("left_knee") is not None or f["angles"].get("right_knee") is not None
+        ]
+        if knee_angles:
+            kick_angle_range = {"min": round(min(knee_angles)), "max": round(max(knee_angles))}
+
     payload = {
         "pose": pose_result,
         "pose_error": pose_error,
         "ai_feedback": ai_feedback,
+        "ball_speed": ball_speed,
+        "kick_angle_range": kick_angle_range,
         "context": context,
     }
 
@@ -132,5 +156,7 @@ async def analyze_pose(
         "score": score,
         "pose": pose_result,
         "pose_error": pose_error,
+        "ball_speed": ball_speed,
+        "kick_angle_range": kick_angle_range,
         "ai_feedback": ai_feedback,
     }
