@@ -3,13 +3,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 
-from app.routers import analysis
+from app import db
+from app.routers import analysis, formation, growth, pose
 
 app = FastAPI(
     title="Soccer Coach AI",
-    description="サッカー指導AI - 動画・画像解析によるフィードバックシステム",
-    version="1.0.0"
+    description="サッカー指導AI - 骨格推定によるフォーム解析・フォーメーション判定・成長記録",
+    version="2.0.0"
 )
+
+# データベースの初期化
+db.init_db()
 
 # CORS設定
 app.add_middleware(
@@ -29,6 +33,9 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # ルーターの登録
 app.include_router(analysis.router, prefix="/api", tags=["analysis"])
+app.include_router(pose.router, prefix="/api", tags=["pose"])
+app.include_router(formation.router, prefix="/api", tags=["formation"])
+app.include_router(growth.router, prefix="/api", tags=["growth"])
 
 
 @app.get("/")

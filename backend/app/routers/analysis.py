@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 
+from app import db
 from app.services.video_processor import VideoProcessor
 from app.services.ai_analyzer import AIAnalyzer
 
@@ -28,10 +29,6 @@ class AnalysisResponse(BaseModel):
 
 class AnalysisHistory(BaseModel):
     analyses: list
-
-
-# メモリ内で履歴を保存（本番環境ではDBを使用）
-analysis_history = []
 
 
 @router.post("/analyze", response_model=AnalysisResponse)
@@ -105,45 +102,43 @@ async def analyze_media(
         analysis=analysis_result
     )
 
-    # 履歴に保存
-    analysis_history.append(result.model_dump())
+    # DB に保存（スキルスコア・達成バッジも自動更新）
+    media_type = "video" if video_processor.is_video(file_path) else "image"
+    db.save_analysis(
+        file_id, filename, media_type, analysis_type,
+        analysis_result.get("score"), analysis_result,
+    )
 
     return result
 
 
 @router.get("/history", response_model=AnalysisHistory)
-async def get_history():
+async def get_history(limit: int = 100):
     """解析履歴を取得"""
-    return AnalysisHistory(analyses=analysis_history)
+    return AnalysisHistory(analyses=db.list_analyses(limit=limit))
 
 
 @router.get("/history/{analysis_id}")
 async def get_analysis(analysis_id: str):
     """特定の解析結果を取得"""
-    for analysis in analysis_history:
-        if analysis["id"] == analysis_id:
-            return analysis
-
-    raise HTTPException(status_code=404, detail="解析結果が見つかりません")
+    analysis = db.get_analysis(analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="解析結果が見つかりません")
+    return analysis
 
 
 @router.delete("/history/{analysis_id}")
 async def delete_analysis(analysis_id: str):
     """解析結果を削除"""
-    global analysis_history
+    if not db.delete_analysis(analysis_id):
+        raise HTTPException(status_code=404, detail="解析結果が見つかりません")
 
-    for i, analysis in enumerate(analysis_history):
-        if analysis["id"] == analysis_id:
-            # ファイルも削除
-            file_path = os.path.join(UPLOAD_DIR, f"{analysis_id}.*")
-            import glob
-            for f in glob.glob(file_path):
-                os.remove(f)
+    # アップロードファイルも削除
+    import glob
+    for f in glob.glob(os.path.join(UPLOAD_DIR, f"{analysis_id}.*")):
+        os.remove(f)
 
-            analysis_history.pop(i)
-            return {"message": "削除しました"}
-
-    raise HTTPException(status_code=404, detail="解析結果が見つかりません")
+    return {"message": "削除しました"}
 
 
 @router.get("/analysis-types")
@@ -153,6 +148,7 @@ async def get_analysis_types():
         "types": [
             {"id": "kick", "name": "キックフォーム分析", "description": "シュートやパスのキックフォームを詳細に分析"},
             {"id": "pass", "name": "パス分析", "description": "パスの精度、タイミング、コース選択を分析"},
+            {"id": "dribble", "name": "ドリブル分析", "description": "ボールタッチ、重心移動、緩急を分析"},
             {"id": "positioning", "name": "ポジショニング分析", "description": "体の向き、足の位置、スペース認識を分析"},
             {"id": "movement", "name": "動き出し分析", "description": "オフ・ザ・ボールの動きを分析"},
             {"id": "general", "name": "総合分析", "description": "プレー全体を総合的に分析"}

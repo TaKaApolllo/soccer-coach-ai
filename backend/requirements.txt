@@ -7,3 +7,9 @@ python-dotenv==1.0.0
 Pillow==10.2.0
 aiofiles==23.2.1
 pydantic==2.5.3
+numpy<2
+# 骨格推定（フォーム解析に必要）
+mediapipe==0.10.14
+# 選手検出の高精度バックエンド（任意・GPU 推奨）
+# https://github.com/roboflow/rf-detr
+# rfdetr>=1.0.0
