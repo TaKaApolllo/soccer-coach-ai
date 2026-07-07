@@ -9,7 +9,7 @@ import TrendChart from '../components/TrendChart'
 import UploadCard from '../components/UploadCard'
 import { IDEAL_MODEL_SCORE } from '../components/IdealModelFigure'
 import { api } from '../services/api'
-import { loadProfile } from '../services/profile'
+import { FaceMode, loadProfile } from '../services/profile'
 import {
   AnalysisHistoryItem,
   CoachLevel,
@@ -50,6 +50,7 @@ function AnalysisDashboardPage() {
   const [poseFile, setPoseFile] = useState<File | null>(null)
   const [poseLoading, setPoseLoading] = useState(false)
   const [poseResult, setPoseResult] = useState<PoseAnalysisResponse | null>(null)
+  const [faceMode, setFaceMode] = useState<FaceMode>(loadProfile().faceMode)
 
   // 右カラム
   const [summary, setSummary] = useState<GrowthSummary | null>(null)
@@ -94,7 +95,7 @@ function AnalysisDashboardPage() {
     setPoseLoading(true)
     setError(null)
     try {
-      const res = await api.analyzePose(poseFile, 'kick')
+      const res = await api.analyzePose(poseFile, 'kick', undefined, faceMode)
       setPoseResult(res)
       setPoseFile(null)
     } catch (err: unknown) {
@@ -310,9 +311,22 @@ function AnalysisDashboardPage() {
             )}
             <UploadCard file={poseFile} onFileChange={setPoseFile} hint="キック動画（横から全身が写るように）" />
             {poseFile && (
-              <button className="btn btn-primary" style={{ width: '100%', marginBottom: 12 }} onClick={runPose} disabled={poseLoading}>
-                {poseLoading ? <><span className="loading-spinner" />骨格を解析中...</> : 'フォーム解析を開始'}
-              </button>
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '4px 0 12px' }}>
+                  <span className="section-label" style={{ marginBottom: 0 }}>顔の表示</span>
+                  <div className="view-toggle" style={{ marginBottom: 0 }}>
+                    <button className={faceMode === 'real' ? 'active' : ''} onClick={() => setFaceMode('real')}>
+                      実写のまま
+                    </button>
+                    <button className={faceMode === 'avatar' ? 'active' : ''} onClick={() => setFaceMode('avatar')}>
+                      アバターで隠す
+                    </button>
+                  </div>
+                </div>
+                <button className="btn btn-primary" style={{ width: '100%', marginBottom: 12 }} onClick={runPose} disabled={poseLoading}>
+                  {poseLoading ? <><span className="loading-spinner" />骨格を解析中...</> : 'フォーム解析を開始'}
+                </button>
+              </>
             )}
 
             {poseResult && (

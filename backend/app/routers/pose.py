@@ -63,13 +63,17 @@ async def analyze_pose(
     file: UploadFile = File(...),
     analysis_type: str = Form(default="kick"),
     context: Optional[str] = Form(default=None),
+    face_mode: str = Form(default="real"),
 ):
     """骨格推定によるフォーム解析
 
     - **file**: 動画または画像
     - **analysis_type**: kick / pass / dribble など
     - **context**: 追加のコンテキスト情報
+    - **face_mode**: real（実写のまま）/ avatar（アニメ風アバターで顔を隠す）
     """
+    if face_mode not in ("real", "avatar"):
+        face_mode = "real"
     filename = file.filename or "upload"
     file_ext = os.path.splitext(filename)[1].lower()
     allowed = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.jpg', '.jpeg', '.png', '.bmp', '.webp'}
@@ -96,7 +100,7 @@ async def analyze_pose(
     pose_result = None
     pose_error = None
     try:
-        pose_result = pose_estimator.analyze_frames(frames)
+        pose_result = pose_estimator.analyze_frames(frames, face_mode=face_mode)
     except PoseUnavailableError as e:
         pose_error = str(e)
     except Exception as e:

@@ -107,7 +107,7 @@ class PoseEstimator:
     # 公開 API
     # ------------------------------------------------------------------
 
-    def analyze_frames(self, frames_bgr: List[np.ndarray]) -> dict:
+    def analyze_frames(self, frames_bgr: List[np.ndarray], face_mode: str = "real") -> dict:
         """複数フレームを解析し、キーポイント・角度・スコア・注釈画像を返す
 
         Returns:
@@ -154,19 +154,38 @@ class PoseEstimator:
                             "y": round(lm.y, 4),
                             "visibility": round(lm.visibility, 3),
                         })
+                    # 顔のサイズ・向き推定用に両耳も取得（描画対象には含めない）
+                    for ear_idx in (7, 8):
+                        lm = result.pose_landmarks.landmark[ear_idx]
+                        if lm.visibility > 0.3:
+                            pts[ear_idx] = (lm.x * w, lm.y * h)
+
                     fp.angles = self._compute_angles(pts)
                     seg_mask = getattr(result, "segmentation_mask", None)
+                    use_avatar_face = face_mode == "avatar"
+
+                    # フォームビュー: 元映像（アバター顔モードでは顔を覆う）
+                    clean_frame = frame.copy()
+                    if use_avatar_face:
+                        self._draw_avatar_face(clean_frame, pts)
+
                     # 角度ビュー: 背景を落として人物を際立たせてから AR 注釈
                     focused = self._focus_person(frame.copy(), seg_mask)
                     frame_out = self._draw_skeleton(focused, pts, fp.angles)
+                    if use_avatar_face:
+                        self._draw_avatar_face(frame_out, pts)
+
                     # 骨格（アバター）ビュー: 人物の切り抜き or ボリュームマネキン
                     skeleton_frame = self._draw_avatar_view(frame, seg_mask, pts, fp.angles)
+                    if use_avatar_face:
+                        self._draw_avatar_face(skeleton_frame, pts)
                 else:
+                    clean_frame = frame
                     frame_out = frame
                     skeleton_frame = None
 
                 poses.append(fp)
-                clean.append(self._to_base64(frame))
+                clean.append(self._to_base64(clean_frame))
                 annotated.append(self._to_base64(frame_out))
                 skeleton_only.append(
                     self._to_base64(skeleton_frame) if skeleton_frame is not None else None
@@ -458,10 +477,11 @@ class PoseEstimator:
                 direction = -1 if name.startswith("left") else 1
                 self._draw_angle_text(frame, jp, f"{angles[name]:.0f}", scale, direction)
 
-        # 体幹の傾きは肩の上にチップ表示
+        # 体幹の傾きは頭の横にチップ表示（アバター顔と重ならない位置）
         # （OpenCV は非 ASCII を描画できないためラベルは英字）
         if "torso_lean" in angles and 11 in pts and 12 in pts:
-            mid = ((pts[11][0] + pts[12][0]) / 2, (pts[11][1] + pts[12][1]) / 2 - 40 * scale)
+            mid = ((pts[11][0] + pts[12][0]) / 2 + 78 * scale,
+                   (pts[11][1] + pts[12][1]) / 2 - 46 * scale)
             self._draw_angle_chip(frame, mid, f"LEAN {angles['torso_lean']:.0f}", scale, leader=False)
 
         return frame
@@ -612,6 +632,90 @@ class PoseEstimator:
             head_c = (nose[0], nose[1] - head_r // 4)
             cv2.circle(canvas, head_c, head_r, BODY_FILL, -1, cv2.LINE_AA)
             cv2.circle(canvas, head_c, head_r, RIM, 1, cv2.LINE_AA)
+
+    def _draw_avatar_face(self, frame: np.ndarray, pts: dict) -> None:
+        """アニメ風のオリジナルアバターフェイスで顔を覆う（匿名化オプション）
+
+        鼻(0)と両耳(7, 8)から頭のサイズ・向きを推定し、
+        実写の顔全体をマスコット風の顔で置き換える。
+        """
+        nose = pts.get(0)
+        if nose is None:
+            return
+
+        # 頭の半径: 両耳の距離 → 片耳と鼻の距離 → 肩幅 の順で推定
+        ear_l, ear_r = pts.get(7), pts.get(8)
+        if ear_l and ear_r:
+            head_r = int(math.hypot(ear_l[0] - ear_r[0], ear_l[1] - ear_r[1]) * 0.95)
+        elif ear_l or ear_r:
+            ear = ear_l or ear_r
+            head_r = int(math.hypot(ear[0] - nose[0], ear[1] - nose[1]) * 1.5)
+        elif pts.get(11) and pts.get(12):
+            sw = math.hypot(pts[11][0] - pts[12][0], pts[11][1] - pts[12][1])
+            head_r = int(sw * 0.42)
+        else:
+            return
+        head_r = max(10, head_r)
+
+        cx, cy = int(nose[0]), int(nose[1]) - head_r // 6
+
+        # 顔の向き: 鼻が両耳の中点からどれだけずれているか（-1〜1）
+        facing = 0.0
+        if ear_l and ear_r:
+            ear_mid_x = (ear_l[0] + ear_r[0]) / 2
+            spread = max(1.0, abs(ear_l[0] - ear_r[0]))
+            facing = float(np.clip((nose[0] - ear_mid_x) / spread, -1.0, 1.0))
+        elif ear_l:
+            facing = 0.6   # 左耳のみ見える → 右向き
+        elif ear_r:
+            facing = -0.6  # 右耳のみ見える → 左向き
+
+        SKIN = (178, 208, 244)      # 明るい肌色 (BGR)
+        SKIN_EDGE = (120, 150, 200)
+        HAIR = (70, 52, 28)         # ダークネイビーの髪
+        EYE = (60, 45, 25)
+        MOUTH = (98, 90, 190)
+
+        # 頭部（少し縦長の楕円）
+        axes = (head_r, int(head_r * 1.08))
+        cv2.ellipse(frame, (cx, cy), axes, 0, 0, 360, SKIN, -1, cv2.LINE_AA)
+        cv2.ellipse(frame, (cx, cy), axes, 0, 0, 360, SKIN_EDGE, 2, cv2.LINE_AA)
+
+        # 髪（上半分のアーチ + 前髪のギザギザ）
+        cv2.ellipse(frame, (cx, cy - int(head_r * 0.12)),
+                    (head_r, int(head_r * 0.95)), 0, 180, 360, HAIR, -1, cv2.LINE_AA)
+        fringe_y = cy - int(head_r * 0.25)
+        n_fringe = 4
+        for k in range(n_fringe):
+            fx = cx - head_r + int((2 * head_r / n_fringe) * (k + 0.5))
+            tri = np.array([
+                [fx - head_r // 5, fringe_y - head_r // 6],
+                [fx + head_r // 5, fringe_y - head_r // 6],
+                [fx, fringe_y + head_r // 4],
+            ], dtype=np.int32)
+            cv2.fillPoly(frame, [tri], HAIR, cv2.LINE_AA)
+
+        # 目（向きに応じて左右にオフセットする大きめのアニメ目）
+        eye_dy = int(head_r * 0.12)
+        eye_dx = int(head_r * 0.42)
+        shift = int(facing * head_r * 0.22)
+        eye_w, eye_h = max(3, int(head_r * 0.16)), max(4, int(head_r * 0.26))
+        for side in (-1, 1):
+            ex = cx + side * eye_dx + shift
+            ey = cy + eye_dy
+            cv2.ellipse(frame, (ex, ey), (eye_w, eye_h), 0, 0, 360, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.ellipse(frame, (ex, ey), (eye_w, eye_h), 0, 0, 360, EYE, 1, cv2.LINE_AA)
+            cv2.circle(frame, (ex + shift // 3, ey + eye_h // 6), max(2, int(eye_w * 0.62)), EYE, -1, cv2.LINE_AA)
+            cv2.circle(frame, (ex + shift // 3 - eye_w // 3, ey - eye_h // 4),
+                       max(1, eye_w // 3), (255, 255, 255), -1, cv2.LINE_AA)
+
+        # 口（小さな笑顔の弧）と頬
+        mouth_y = cy + int(head_r * 0.55)
+        cv2.ellipse(frame, (cx + shift, mouth_y), (max(3, head_r // 5), max(2, head_r // 8)),
+                    0, 20, 160, MOUTH, 2, cv2.LINE_AA)
+        for side in (-1, 1):
+            cv2.circle(frame, (cx + side * int(head_r * 0.58) + shift, cy + int(head_r * 0.38)),
+                       max(2, head_r // 8), (150, 168, 250), -1, cv2.LINE_AA)
 
     @staticmethod
     def _draw_dashed_circle(frame: np.ndarray, center, radius: int, color, dashes: int = 12) -> None:

@@ -2,14 +2,18 @@ import { CoachLevel } from '../types'
 
 const KEY = 'tactica_profile'
 
+export type FaceMode = 'real' | 'avatar'
+
 export interface Profile {
   name: string
   coachLevel: CoachLevel
+  faceMode: FaceMode
 }
 
 const DEFAULT_PROFILE: Profile = {
   name: 'コーチ',
-  coachLevel: 'intermediate'
+  coachLevel: 'intermediate',
+  faceMode: 'real'
 }
 
 export function loadProfile(): Profile {

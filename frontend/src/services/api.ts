@@ -20,12 +20,14 @@ export const api = {
   async analyzePose(
     file: File,
     analysisType: string,
-    context?: string
+    context?: string,
+    faceMode: 'real' | 'avatar' = 'real'
   ): Promise<PoseAnalysisResponse> {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('analysis_type', analysisType)
     if (context) formData.append('context', context)
+    formData.append('face_mode', faceMode)
 
     const response = await axios.post<PoseAnalysisResponse>(
       `${API_BASE}/pose/analyze`,

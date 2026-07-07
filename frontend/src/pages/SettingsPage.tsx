@@ -1,11 +1,16 @@
 import { useState } from 'react'
-import { loadProfile, saveProfile } from '../services/profile'
+import { FaceMode, loadProfile, saveProfile } from '../services/profile'
 import { CoachLevel } from '../types'
 
 const LEVELS: { id: CoachLevel; label: string; description: string }[] = [
   { id: 'beginner', label: '初心者', description: 'サッカー用語を使わず、やさしい言葉で説明します' },
   { id: 'intermediate', label: '中級者', description: '基本的な戦術用語を使って具体的に説明します' },
   { id: 'advanced', label: '上級者', description: 'ポジショナルプレー等の高度な概念で説明します' }
+]
+
+const FACE_MODES: { id: FaceMode; label: string; description: string }[] = [
+  { id: 'real', label: '実写のまま', description: 'アップロードした映像の顔をそのまま表示します' },
+  { id: 'avatar', label: 'アバターで隠す', description: 'アニメ風のアバターフェイスで顔を覆い、匿名化します' }
 ]
 
 function SettingsPage() {
@@ -46,6 +51,21 @@ function SettingsPage() {
             >
               <strong>{lv.label}</strong>
               <div style={{ fontSize: '0.78rem', opacity: 0.8 }}>{lv.description}</div>
+            </button>
+          ))}
+        </div>
+
+        <h3 className="card-title">フォーム解析の顔の表示</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+          {FACE_MODES.map((fm) => (
+            <button
+              key={fm.id}
+              className={`analysis-type-btn ${profile.faceMode === fm.id ? 'selected' : ''}`}
+              style={{ textAlign: 'left', borderRadius: 12 }}
+              onClick={() => setProfile({ ...profile, faceMode: fm.id })}
+            >
+              <strong>{fm.label}</strong>
+              <div style={{ fontSize: '0.78rem', opacity: 0.8 }}>{fm.description}</div>
             </button>
           ))}
         </div>
