@@ -135,6 +135,7 @@ class PoseEstimator:
             static_image_mode=True,
             model_complexity=self._model_complexity,
             min_detection_confidence=0.4,
+            enable_segmentation=True,
         ) as pose_model:
             for i, frame in enumerate(frames_bgr):
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -154,8 +155,12 @@ class PoseEstimator:
                             "visibility": round(lm.visibility, 3),
                         })
                     fp.angles = self._compute_angles(pts)
-                    frame_out = self._draw_skeleton(frame.copy(), pts, fp.angles)
-                    skeleton_frame = self._draw_skeleton_only(frame.shape, pts, fp.angles)
+                    seg_mask = getattr(result, "segmentation_mask", None)
+                    # 角度ビュー: 背景を落として人物を際立たせてから AR 注釈
+                    focused = self._focus_person(frame.copy(), seg_mask)
+                    frame_out = self._draw_skeleton(focused, pts, fp.angles)
+                    # 骨格（アバター）ビュー: 人物の切り抜き or ボリュームマネキン
+                    skeleton_frame = self._draw_avatar_view(frame, seg_mask, pts, fp.angles)
                 else:
                     frame_out = frame
                     skeleton_frame = None
@@ -461,16 +466,152 @@ class PoseEstimator:
 
         return frame
 
-    def _draw_skeleton_only(self, shape, pts: dict, angles: dict) -> np.ndarray:
-        """骨格ビュー: 暗いグラデーション背景にスケルトンのみを描画"""
+    @staticmethod
+    def _dark_gradient(shape) -> np.ndarray:
+        """スタジアム風のダークグラデーション背景"""
         h, w = shape[:2]
-        # 縦方向のダークグラデーション背景
         base = np.linspace(18, 34, h, dtype=np.uint8)
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
         canvas[:, :, 0] = base[:, None]              # B
         canvas[:, :, 1] = (base * 1.4).astype(np.uint8)[:, None]  # G（緑がかった闇）
         canvas[:, :, 2] = base[:, None]              # R
+        return canvas
+
+    @staticmethod
+    def _focus_person(frame: np.ndarray, seg_mask) -> np.ndarray:
+        """セグメンテーションマスクで背景を暗く落とし、人物を際立たせる"""
+        if seg_mask is None:
+            return frame
+        m = (seg_mask > 0.5).astype(np.float32)
+        if m.sum() < 200:  # マスクが小さすぎる場合は信頼しない
+            return frame
+        m = cv2.GaussianBlur(m, (21, 21), 0)[..., None]
+        bg = (frame * 0.45).astype(np.uint8)
+        return (frame * m + bg * (1.0 - m)).astype(np.uint8)
+
+    def _draw_avatar_view(self, frame: np.ndarray, seg_mask, pts: dict, angles: dict) -> np.ndarray:
+        """骨格（アバター）ビュー
+
+        セグメンテーションが取れた場合は実人物の切り抜きを
+        ダーク背景に合成し、輪郭にネオンのリムライトを付ける。
+        取れない場合は体にボリュームのあるマネキンを描画する。
+        いずれも上から骨格・角度を重ねるため、フォームが立体的に読める。
+        """
+        canvas = self._dark_gradient(frame.shape)
+
+        use_mask = seg_mask is not None and (seg_mask > 0.5).sum() >= 200
+        if use_mask:
+            m = (seg_mask > 0.5).astype(np.uint8)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+
+            # リムライト: 人物輪郭の外側にネオングロー
+            rim = cv2.dilate(m, kernel) - m
+            rim_soft = cv2.GaussianBlur(rim.astype(np.float32), (15, 15), 0)[..., None]
+            glow = np.zeros_like(canvas)
+            glow[:] = NEON_GREEN
+            canvas = (canvas * (1 - rim_soft * 0.85) + glow * (rim_soft * 0.85)).astype(np.uint8)
+
+            # 人物の切り抜きを少し明るくして合成
+            mf = cv2.GaussianBlur(m.astype(np.float32), (7, 7), 0)[..., None]
+            person = cv2.convertScaleAbs(frame, alpha=1.08, beta=6)
+            canvas = (person * mf + canvas * (1.0 - mf)).astype(np.uint8)
+        else:
+            self._draw_mannequin(canvas, pts)
+
         return self._draw_skeleton(canvas, pts, angles)
+
+    def _draw_mannequin(self, canvas: np.ndarray, pts: dict) -> None:
+        """ランドマークから体にボリュームのあるマネキンを描画（棒人間の代替）
+
+        手足を太いカプセル（先細り）、胴体を塗りつぶし多角形、
+        頭部を塗りつぶし円で表現し、輪郭にネオンのリムを付ける。
+        """
+        def get(i):
+            p = pts.get(i)
+            return (int(p[0]), int(p[1])) if p else None
+
+        shoulder_l, shoulder_r = get(11), get(12)
+        hip_l, hip_r = get(23), get(24)
+        nose = get(0)
+        if not all((shoulder_l, shoulder_r, hip_l, hip_r)):
+            return
+
+        # 体格スケール: 肩中点〜腰中点の距離
+        sm = ((shoulder_l[0] + shoulder_r[0]) // 2, (shoulder_l[1] + shoulder_r[1]) // 2)
+        hm = ((hip_l[0] + hip_r[0]) // 2, (hip_l[1] + hip_r[1]) // 2)
+        torso_h = max(24.0, math.hypot(sm[0] - hm[0], sm[1] - hm[1]))
+
+        BODY_FILL = (52, 66, 58)      # ダークスレート（BGR）
+        BODY_SHADE = (38, 50, 44)
+        RIM = NEON_GREEN_GLOW
+
+        def capsule(a, b, r1, r2, color=BODY_FILL):
+            """先細りのカプセル（四辺形 + 両端円）"""
+            if a is None or b is None:
+                return
+            ax, ay = a
+            bx, by = b
+            dx, dy = bx - ax, by - ay
+            n = math.hypot(dx, dy)
+            if n < 1e-3:
+                return
+            nx, ny = -dy / n, dx / n
+            quad = np.array([
+                [ax + nx * r1, ay + ny * r1],
+                [bx + nx * r2, by + ny * r2],
+                [bx - nx * r2, by - ny * r2],
+                [ax - nx * r1, ay - ny * r1],
+            ], dtype=np.int32)
+            cv2.fillPoly(canvas, [quad], color, cv2.LINE_AA)
+            cv2.circle(canvas, (int(ax), int(ay)), int(r1), color, -1, cv2.LINE_AA)
+            cv2.circle(canvas, (int(bx), int(by)), int(r2), color, -1, cv2.LINE_AA)
+            # リムライト
+            cv2.polylines(canvas, [quad], True, RIM, 1, cv2.LINE_AA)
+
+        # 太さ（体格比）
+        thigh = torso_h * 0.20
+        shin = torso_h * 0.15
+        upper_arm = torso_h * 0.13
+        forearm = torso_h * 0.10
+        foot = torso_h * 0.10
+
+        # 脚（腿 → すね → 足）
+        capsule(get(23), get(25), thigh, thigh * 0.75)
+        capsule(get(25), get(27), shin, shin * 0.7, BODY_SHADE)
+        capsule(get(27), get(31), foot, foot * 0.8, BODY_SHADE)
+        capsule(get(24), get(26), thigh, thigh * 0.75)
+        capsule(get(26), get(28), shin, shin * 0.7, BODY_SHADE)
+        capsule(get(28), get(32), foot, foot * 0.8, BODY_SHADE)
+
+        # 胴体（肩幅・腰幅を少し広げた四角形）
+        def widen(p, q, factor):
+            cx_, cy_ = (p[0] + q[0]) / 2, (p[1] + q[1]) / 2
+            return (
+                (int(cx_ + (p[0] - cx_) * factor), int(cy_ + (p[1] - cy_) * factor)),
+                (int(cx_ + (q[0] - cx_) * factor), int(cy_ + (q[1] - cy_) * factor)),
+            )
+
+        sl, sr = widen(shoulder_l, shoulder_r, 1.25)
+        hl, hr = widen(hip_l, hip_r, 1.15)
+        torso_poly = np.array([sl, sr, hr, hl], dtype=np.int32)
+        cv2.fillPoly(canvas, [torso_poly], BODY_FILL, cv2.LINE_AA)
+        cv2.polylines(canvas, [torso_poly], True, RIM, 1, cv2.LINE_AA)
+
+        # 腕（上腕 → 前腕）: 胴体の上に描く
+        capsule(get(11), get(13), upper_arm, upper_arm * 0.8)
+        capsule(get(13), get(15), forearm, forearm * 0.7, BODY_SHADE)
+        capsule(get(12), get(14), upper_arm, upper_arm * 0.8)
+        capsule(get(14), get(16), forearm, forearm * 0.7, BODY_SHADE)
+
+        # 首と頭
+        if nose:
+            head_r = int(torso_h * 0.24)
+            neck = (int((sm[0] + nose[0]) / 2), int((sm[1] + nose[1]) / 2))
+            capsule(sm, neck, upper_arm * 0.9, upper_arm * 0.8)
+            head_c = (nose[0], nose[1] - head_r // 4)
+            cv2.circle(canvas, head_c, head_r, BODY_FILL, -1, cv2.LINE_AA)
+            cv2.circle(canvas, head_c, head_r, RIM, 1, cv2.LINE_AA)
 
     @staticmethod
     def _draw_dashed_circle(frame: np.ndarray, center, radius: int, color, dashes: int = 12) -> None:
