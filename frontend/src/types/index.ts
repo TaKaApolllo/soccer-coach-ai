@@ -71,9 +71,12 @@ export interface ScoreBreakdownItem {
 export interface PoseResult {
   frames: PoseFrame[]
   annotated_images: string[]
+  clean_images?: string[]
+  skeleton_images?: (string | null)[]
   key_frame_index: number
   metrics: Record<string, number>
   score: number
+  score_message?: { headline: string; detail: string }
   score_breakdown: ScoreBreakdownItem[]
   phases: string[]
 }
@@ -238,6 +241,8 @@ export interface FormationResponse {
   backend: string
   player_count: number
   frames_analyzed: number
+  base_time?: string | null
+  facing_summary?: { forward: number; diagonal: number; backward: number } | null
   teams: TeamFormation[]
   phases: Phases | null
   tactics: Tactics | null

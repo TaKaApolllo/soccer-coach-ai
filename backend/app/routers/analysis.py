@@ -118,6 +118,23 @@ async def get_history(limit: int = 100):
     return AnalysisHistory(analyses=db.list_analyses(limit=limit))
 
 
+@router.get("/history-latest/{analysis_type}")
+async def get_latest_analysis(analysis_type: str):
+    """指定タイプの最新解析結果（ペイロード込み）を取得
+
+    ダッシュボードで前回の解析結果を復元するために使う。
+    analysis_type に "pose" を指定すると骨格解析系
+    （kick/pass/dribble など formation 以外）の最新を返す。
+    """
+    for item in db.list_analyses(limit=50, include_payload=True):
+        if analysis_type == "pose":
+            if item["analysis_type"] != "formation" and item.get("analysis", {}).get("pose"):
+                return item
+        elif item["analysis_type"] == analysis_type:
+            return item
+    raise HTTPException(status_code=404, detail="該当する解析結果がありません")
+
+
 @router.get("/history/{analysis_id}")
 async def get_analysis(analysis_id: str):
     """特定の解析結果を取得"""

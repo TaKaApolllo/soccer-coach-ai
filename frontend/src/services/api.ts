@@ -102,6 +102,18 @@ export const api = {
     return response.data
   },
 
+  /** 指定タイプの最新解析（ペイロード込み）。"pose" で骨格解析系の最新 */
+  async getLatestAnalysis<T = Record<string, unknown>>(
+    analysisType: string
+  ): Promise<{ id: string; created_at: string; analysis: T } | null> {
+    try {
+      const response = await axios.get(`${API_BASE}/history-latest/${analysisType}`)
+      return response.data
+    } catch {
+      return null
+    }
+  },
+
   async deleteAnalysis(id: string): Promise<void> {
     await axios.delete(`${API_BASE}/history/${id}`)
   },

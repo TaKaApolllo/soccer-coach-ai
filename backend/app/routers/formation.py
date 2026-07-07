@@ -41,30 +41,106 @@ UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file
 PHASE_FRAMES = 5
 
 
-def _load_analysis_frames(file_path: str) -> List[np.ndarray]:
-    """画像なら1枚、動画なら等間隔で PHASE_FRAMES 枚を取り出す"""
+def _load_analysis_frames(file_path: str) -> Tuple[List[np.ndarray], List[float]]:
+    """画像なら1枚、動画なら等間隔で PHASE_FRAMES 枚を取り出す
+
+    Returns:
+        (フレーム列, 各フレームの動画内時刻 [秒])
+    """
     if video_processor.is_video(file_path):
         cap = cv2.VideoCapture(file_path)
         if not cap.isOpened():
             raise ValueError("動画ファイルを開けません")
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         n = min(PHASE_FRAMES, max(1, total))
         indices = [int((i + 0.5) * total / n) for i in range(n)]
         frames = []
+        times = []
         for idx in indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, min(idx, total - 1))
             ok, frame = cap.read()
             if ok:
                 frames.append(frame)
+                times.append(idx / fps)
         cap.release()
         if not frames:
             raise ValueError("動画からフレームを取得できませんでした")
-        return frames
+        return frames, times
 
     img = cv2.imread(file_path)
     if img is None:
         raise ValueError("画像ファイルを開けません")
-    return [img]
+    return [img], [0.0]
+
+
+def _format_time(seconds: float) -> str:
+    m = int(seconds) // 60
+    s = int(seconds) % 60
+    return f"{m:02d}:{s:02d}"
+
+
+def _facing_summary(
+    base_detection: DetectionResult,
+    detections: List[Optional[DetectionResult]],
+    base_idx: int,
+    focus_team: int,
+    attack_ltr: bool,
+) -> Optional[dict]:
+    """選手の向き（前向き/斜め/後ろ向き）を移動方向から推定（動画のみ）
+
+    隣接フレームの検出と最近傍マッチングし、移動ベクトルと
+    攻撃方向のなす角で分類する。静止中の選手は「前向き」扱い。
+    """
+    other = None
+    sign = 1
+    for offset in (1, -1, 2, -2):
+        j = base_idx + offset
+        if (
+            0 <= j < len(detections)
+            and detections[j] is not None
+            and j != base_idx
+            and len(detections[j].players) >= 6  # 検出不良フレームはスキップ
+        ):
+            other = detections[j]
+            sign = 1 if offset > 0 else -1
+            break
+    if other is None:
+        return None
+
+    base_players = [p for p in base_detection.players if p.team == focus_team and p.pitch_xy]
+    other_players = [p for p in other.players if p.team == focus_team and p.pitch_xy]
+    if not base_players or not other_players:
+        return None
+
+    forward = diagonal = backward = 0
+    for bp in base_players:
+        nearest = min(
+            other_players,
+            key=lambda op: (op.pitch_xy[0] - bp.pitch_xy[0]) ** 2 + (op.pitch_xy[1] - bp.pitch_xy[1]) ** 2,
+        )
+        dx = (nearest.pitch_xy[0] - bp.pitch_xy[0]) * sign
+        dy = (nearest.pitch_xy[1] - bp.pitch_xy[1]) * sign
+        dist = np.hypot(dx * 105, dy * 68)
+        if dist > 20:  # マッチング失敗とみなす
+            continue
+        if dist < 0.8:  # ほぼ静止
+            forward += 1
+            continue
+        if not attack_ltr:
+            dx = -dx
+        angle = abs(np.degrees(np.arctan2(dy, dx)))
+        if angle < 50:
+            forward += 1
+        elif angle <= 120:
+            diagonal += 1
+        else:
+            backward += 1
+
+    total = forward + diagonal + backward
+    if total == 0:
+        return None
+    return {"forward": forward, "diagonal": diagonal, "backward": backward}
 
 
 def _team_mean_colors(detection: DetectionResult) -> dict:
@@ -241,7 +317,7 @@ async def analyze_formation(
         raise HTTPException(status_code=500, detail=f"ファイルの保存に失敗しました: {e}")
 
     try:
-        frames = _load_analysis_frames(file_path)
+        frames, frame_times = _load_analysis_frames(file_path)
     except ValueError as e:
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -321,6 +397,17 @@ async def analyze_formation(
     except Exception as e:
         tactics = tactics or {"error": f"戦術分析に失敗しました: {e}"}
 
+    # --- 選手の向きサマリー（動画のみ・移動方向から推定） ---
+    facing = None
+    if len(frames) >= 2 and tactics and "attack_ltr" in tactics:
+        try:
+            facing = _facing_summary(
+                detection, detections, base_idx, focus_team,
+                tactics["attack_ltr"][focus_team],
+            )
+        except Exception:
+            facing = None
+
     # --- 戦術スコア（成長記録用） ---
     tactical_scores = {}
     if tactics and "teams" in tactics:
@@ -349,6 +436,8 @@ async def analyze_formation(
         "backend": detection.backend,
         "player_count": len(detection.players),
         "frames_analyzed": len([d for d in detections if d is not None]),
+        "base_time": _format_time(frame_times[base_idx]) if len(frames) >= 2 else None,
+        "facing_summary": facing,
         "teams": teams_payload,
         "phases": phases,
         "tactics": tactics,

@@ -203,15 +203,21 @@ class PlayerDetector:
         if self._rfdetr is not None:
             players = self._detect_rfdetr(frame)
             if players:
-                return self._filter_on_field(players, field_mask), "rf-detr"
+                filtered = self._filter_on_field(players, field_mask)
+                if len(filtered) >= 2:
+                    return filtered, "rf-detr"
 
-        players = self._detect_hog(frame)
-        if players:
-            filtered = self._filter_on_field(players, field_mask)
-            if filtered:
-                return filtered, "opencv-hog"
+        hog_players = self._filter_on_field(self._detect_hog(frame), field_mask)
 
-        return self._detect_blobs(frame, field_mask), "color-blob"
+        # HOG は遠景の小さい選手を取りこぼしやすい。
+        # チーム分析に足りない場合は色ブロブ検出と比較して多い方を採用する。
+        if len(hog_players) >= 8:
+            return hog_players, "opencv-hog"
+
+        blob_players = self._detect_blobs(frame, field_mask)
+        if len(hog_players) >= len(blob_players):
+            return (hog_players, "opencv-hog") if hog_players else (blob_players, "color-blob")
+        return blob_players, "color-blob"
 
     def _detect_rfdetr(self, frame: np.ndarray) -> List[DetectedPlayer]:
         try:

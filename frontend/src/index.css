@@ -99,6 +99,36 @@ body {
   color: var(--text-muted);
 }
 
+/* トップナビ（デスクトップ） */
+.top-nav {
+  display: flex;
+  gap: 6px;
+}
+
+.top-nav a {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: color 0.15s, background 0.15s;
+}
+
+.top-nav a:hover { color: var(--text-secondary); }
+
+.top-nav a.active {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+@media (max-width: 860px) {
+  .top-nav { display: none; }
+}
+
 /* ---------------------------------------------------------------- */
 /* Bottom navigation                                                 */
 /* ---------------------------------------------------------------- */
@@ -695,6 +725,200 @@ body {
   border: 1px solid var(--border-strong);
 }
 
+/* ---------------------------------------------------------------- */
+/* TACTICA 統合ダッシュボード                                          */
+/* ---------------------------------------------------------------- */
+
+.tactica-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr 0.85fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.tactica-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.tactica-col .card { margin-bottom: 18px; }
+
+.tactica-duo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+@media (max-width: 1100px) {
+  .tactica-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 820px) {
+  .tactica-grid { grid-template-columns: 1fr; }
+  .tactica-duo { grid-template-columns: 1fr 1fr; }
+}
+
+/* 統計チップ行（フォーメーション/フェーズ/時間/信頼度） */
+.stat-chip-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.stat-chip {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-chip-label {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.stat-chip-value {
+  font-size: 0.98rem;
+  font-weight: 800;
+}
+
+.stat-chip-value.accent { color: var(--accent); }
+
+/* チーム構造・パス候補の行 */
+.struct-rows { display: flex; flex-direction: column; gap: 8px; }
+
+.struct-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 7px;
+}
+
+.struct-row:last-child { border-bottom: none; padding-bottom: 0; }
+.struct-row strong { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+
+.accent-text { color: var(--accent) !important; }
+.warn-text { color: var(--series-3) !important; }
+
+/* 選手角度サマリー */
+.facing-row { display: flex; gap: 8px; }
+
+.facing-item {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 8px;
+  text-align: center;
+}
+
+.facing-label { font-size: 0.68rem; color: var(--text-muted); margin-bottom: 2px; }
+.facing-value { font-size: 1.15rem; font-weight: 800; }
+
+/* 3Dビュー（擬似パース） */
+.pitch-3d svg {
+  transform: perspective(820px) rotateX(34deg) scale(1.06);
+  transform-origin: 50% 68%;
+}
+
+.pitch-3d {
+  overflow: hidden;
+  padding-top: 6px;
+}
+
+/* 比較タブ */
+.compare-grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.compare-side { text-align: center; }
+
+.compare-side img,
+.compare-side svg {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+}
+
+.compare-label {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+.compare-score {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.compare-vs {
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+.pro-compare-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.pro-compare-side {
+  text-align: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.pro-compare-score { font-size: 1.9rem; font-weight: 800; }
+
+/* 練習メニュー */
+.drill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 16px;
+}
+
+.drill-card { margin-bottom: 0; }
+
+.drill-card-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.drill-icon { font-size: 1.6rem; }
+.drill-title { font-weight: 700; font-size: 0.95rem; }
+.drill-meta { font-size: 0.72rem; color: var(--text-muted); }
+.drill-desc { font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 10px; }
+
+.drill-skills { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.drill-skill-tag {
+  font-size: 0.68rem;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
 /* 攻守局面別フォーメーション */
 .phase-grid {
   display: grid;
@@ -844,4 +1068,11 @@ body {
   .main-content { padding: 16px 14px 96px; }
   .dash-grid { grid-template-columns: 1fr; }
   .greeting { font-size: 1.3rem; }
+}
+
+/* デスクトップではトップナビを使い、ボトムナビは隠す
+   （.bottom-nav の基本定義より後に置いて優先させること） */
+@media (min-width: 861px) {
+  .bottom-nav { display: none; }
+  .main-content { padding-bottom: 32px; }
 }

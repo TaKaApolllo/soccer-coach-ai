@@ -127,7 +127,9 @@ class PoseEstimator:
             )
 
         poses: List[FramePose] = []
-        annotated: List[str] = []
+        annotated: List[str] = []   # 角度ビュー（AR注釈付き）
+        clean: List[str] = []       # フォームビュー（元映像）
+        skeleton_only: List[str] = []  # 骨格ビュー（暗背景にスケルトンのみ）
 
         with mp.solutions.pose.Pose(
             static_image_mode=True,
@@ -153,11 +155,17 @@ class PoseEstimator:
                         })
                     fp.angles = self._compute_angles(pts)
                     frame_out = self._draw_skeleton(frame.copy(), pts, fp.angles)
+                    skeleton_frame = self._draw_skeleton_only(frame.shape, pts, fp.angles)
                 else:
                     frame_out = frame
+                    skeleton_frame = None
 
                 poses.append(fp)
+                clean.append(self._to_base64(frame))
                 annotated.append(self._to_base64(frame_out))
+                skeleton_only.append(
+                    self._to_base64(skeleton_frame) if skeleton_frame is not None else None
+                )
 
         self._assign_phases(poses)
         key_idx = self._pick_key_frame(poses)
@@ -175,12 +183,39 @@ class PoseEstimator:
                 for p in poses
             ],
             "annotated_images": annotated,
+            "clean_images": clean,
+            "skeleton_images": skeleton_only,
             "key_frame_index": key_idx,
             "metrics": metrics,
             "score": score,
+            "score_message": self._score_message(score, breakdown),
             "score_breakdown": breakdown,
             "phases": [p.phase for p in poses],
         }
+
+    @staticmethod
+    def _score_message(score: int, breakdown: List[dict]) -> dict:
+        """スコアリング直下に表示する一言メッセージ"""
+        if score >= 85:
+            headline = "素晴らしい角度です！"
+        elif score >= 70:
+            headline = "良いフォームです！"
+        elif score >= 50:
+            headline = "改善の余地があります"
+        else:
+            headline = "基礎から確認しましょう"
+
+        detail = ""
+        if breakdown:
+            best = max(breakdown, key=lambda b: b["score"])
+            worst = min(breakdown, key=lambda b: b["score"])
+            if best["score"] >= 80 and worst["score"] >= 80:
+                detail = f"{best['label']}が特に優れており、強いシュートが期待できます。"
+            elif best["score"] >= 80:
+                detail = f"{best['label']}は良好です。{worst['label']}を意識するとさらに伸びます。"
+            else:
+                detail = f"まずは{worst['label']}から改善しましょう。"
+        return {"headline": headline, "detail": detail}
 
     # ------------------------------------------------------------------
     # 角度計算
@@ -410,10 +445,13 @@ class PoseEstimator:
             jp = pts[joint]
             self._draw_dashed_circle(frame, jp, int(16 * scale), NEON_GREEN)
             if parent in pts and child in pts:
-                self._draw_angle_arc(frame, jp, pts[parent], pts[child], int(24 * scale))
-            # 膝と股関節はチップも表示（肘は円弧のみで情報過多を避ける）
+                self._draw_angle_arc(frame, jp, pts[parent], pts[child], int(26 * scale))
+            # 膝と股関節はモックアップ風の大型角度テキストを表示
+            # （肘は円弧のみで情報過多を避ける）
             if "knee" in name or "hip" in name:
-                self._draw_angle_chip(frame, jp, f"{angles[name]:.0f}", scale)
+                # 体の外側にオフセット（左関節は左へ、右関節は右へ）
+                direction = -1 if name.startswith("left") else 1
+                self._draw_angle_text(frame, jp, f"{angles[name]:.0f}", scale, direction)
 
         # 体幹の傾きは肩の上にチップ表示
         # （OpenCV は非 ASCII を描画できないためラベルは英字）
@@ -422,6 +460,17 @@ class PoseEstimator:
             self._draw_angle_chip(frame, mid, f"LEAN {angles['torso_lean']:.0f}", scale, leader=False)
 
         return frame
+
+    def _draw_skeleton_only(self, shape, pts: dict, angles: dict) -> np.ndarray:
+        """骨格ビュー: 暗いグラデーション背景にスケルトンのみを描画"""
+        h, w = shape[:2]
+        # 縦方向のダークグラデーション背景
+        base = np.linspace(18, 34, h, dtype=np.uint8)
+        canvas = np.zeros((h, w, 3), dtype=np.uint8)
+        canvas[:, :, 0] = base[:, None]              # B
+        canvas[:, :, 1] = (base * 1.4).astype(np.uint8)[:, None]  # G（緑がかった闇）
+        canvas[:, :, 2] = base[:, None]              # R
+        return self._draw_skeleton(canvas, pts, angles)
 
     @staticmethod
     def _draw_dashed_circle(frame: np.ndarray, center, radius: int, color, dashes: int = 12) -> None:
@@ -450,6 +499,33 @@ class PoseEstimator:
         cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, dst=frame)
         cv2.ellipse(frame, (int(joint[0]), int(joint[1])), (radius, radius),
                     0, start, end, NEON_GREEN, 1, cv2.LINE_AA)
+
+    @staticmethod
+    def _draw_angle_text(frame: np.ndarray, pos, text: str,
+                         scale: float, direction: int) -> None:
+        """モックアップ風の大型角度テキスト（暗色アウトライン + ネオン文字 + 度記号）"""
+        h, w = frame.shape[:2]
+        font_scale = 0.95 * scale
+        thickness = max(1, int(2 * scale))
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, font_scale, thickness)
+        deg_r = max(2, int(3 * scale))
+
+        offset_x = int(44 * scale)
+        x = int(pos[0]) + (offset_x if direction > 0 else -offset_x - tw - deg_r * 2)
+        y = int(pos[1]) - int(14 * scale)
+        x = min(max(4, x), max(4, w - tw - deg_r * 3 - 4))
+        y = min(max(th + 6, y), h - 8)
+
+        # アウトライン → 本文字 の2層でどんな背景でも読めるように
+        cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_DUPLEX,
+                    font_scale, (15, 25, 15), thickness + 3, cv2.LINE_AA)
+        cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_DUPLEX,
+                    font_scale, NEON_GREEN, thickness, cv2.LINE_AA)
+        # 度記号（右肩の小円）
+        cv2.circle(frame, (x + tw + deg_r + 2, y - th + deg_r),
+                   deg_r + 1, (15, 25, 15), 3, cv2.LINE_AA)
+        cv2.circle(frame, (x + tw + deg_r + 2, y - th + deg_r),
+                   deg_r, NEON_GREEN, 1, cv2.LINE_AA)
 
     def _draw_angle_chip(self, frame: np.ndarray, pos, text: str,
                          scale: float, leader: bool = True) -> None:
