@@ -1,7 +1,10 @@
 import { Routes, Route } from 'react-router-dom'
 import Header from './components/Header'
-import HomePage from './pages/HomePage'
-import HistoryPage from './pages/HistoryPage'
+import BottomNav from './components/BottomNav'
+import DashboardPage from './pages/DashboardPage'
+import AnalysisPage from './pages/AnalysisPage'
+import FormationPage from './pages/FormationPage'
+import GrowthPage from './pages/GrowthPage'
 
 function App() {
   return (
@@ -9,10 +12,13 @@ function App() {
       <Header />
       <main className="main-content">
         <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/history" element={<HistoryPage />} />
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/analysis" element={<AnalysisPage />} />
+          <Route path="/formation" element={<FormationPage />} />
+          <Route path="/growth" element={<GrowthPage />} />
         </Routes>
       </main>
+      <BottomNav />
     </div>
   )
 }

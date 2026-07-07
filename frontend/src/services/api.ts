@@ -1,9 +1,65 @@
 import axios from 'axios'
-import { AnalysisResult, AnalysisType, AnalysisHistory } from '../types'
+import {
+  AnalysisHistory,
+  AnalysisResult,
+  AnalysisType,
+  FormationResponse,
+  GrowthSummary,
+  PoseAnalysisResponse,
+  TrendData
+} from '../types'
 
 const API_BASE = '/api'
 
 export const api = {
+  // ---------------------------------------------------------------
+  // フォーム解析（骨格推定 + AI コーチング）
+  // ---------------------------------------------------------------
+
+  async analyzePose(
+    file: File,
+    analysisType: string,
+    context?: string
+  ): Promise<PoseAnalysisResponse> {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('analysis_type', analysisType)
+    if (context) formData.append('context', context)
+
+    const response = await axios.post<PoseAnalysisResponse>(
+      `${API_BASE}/pose/analyze`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 }
+    )
+    return response.data
+  },
+
+  // ---------------------------------------------------------------
+  // フォーメーション解析
+  // ---------------------------------------------------------------
+
+  async analyzeFormation(
+    file: File,
+    teamAName?: string,
+    teamBName?: string
+  ): Promise<FormationResponse> {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (teamAName) formData.append('team_a_name', teamAName)
+    if (teamBName) formData.append('team_b_name', teamBName)
+
+    const response = await axios.post<FormationResponse>(
+      `${API_BASE}/formation/analyze`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 }
+    )
+    return response.data
+  },
+
+  // ---------------------------------------------------------------
+  // 従来の Vision 解析
+  // ---------------------------------------------------------------
+
   async analyzeMedia(
     file: File,
     analysisType: string,
@@ -12,20 +68,13 @@ export const api = {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('analysis_type', analysisType)
-    if (context) {
-      formData.append('context', context)
-    }
+    if (context) formData.append('context', context)
 
     const response = await axios.post<AnalysisResult>(
       `${API_BASE}/analyze`,
       formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
-      }
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 }
     )
-
     return response.data
   },
 
@@ -36,17 +85,34 @@ export const api = {
     return response.data
   },
 
+  // ---------------------------------------------------------------
+  // 履歴・成長記録
+  // ---------------------------------------------------------------
+
   async getHistory(): Promise<AnalysisHistory> {
     const response = await axios.get<AnalysisHistory>(`${API_BASE}/history`)
     return response.data
   },
 
-  async getAnalysis(id: string): Promise<AnalysisResult> {
-    const response = await axios.get<AnalysisResult>(`${API_BASE}/history/${id}`)
+  async getAnalysis(id: string): Promise<Record<string, unknown>> {
+    const response = await axios.get(`${API_BASE}/history/${id}`)
     return response.data
   },
 
   async deleteAnalysis(id: string): Promise<void> {
     await axios.delete(`${API_BASE}/history/${id}`)
+  },
+
+  async getGrowthSummary(): Promise<GrowthSummary> {
+    const response = await axios.get<GrowthSummary>(`${API_BASE}/growth/summary`)
+    return response.data
+  },
+
+  async getGrowthTrend(months = 8): Promise<TrendData> {
+    const response = await axios.get<TrendData>(
+      `${API_BASE}/growth/trend`,
+      { params: { months } }
+    )
+    return response.data
   }
 }

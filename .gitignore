@@ -48,3 +48,6 @@ htmlcov/
 # Build
 build/
 *.egg-info/
+
+# Database
+backend/soccer_coach.db

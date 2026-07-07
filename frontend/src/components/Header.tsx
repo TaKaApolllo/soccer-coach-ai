@@ -1,17 +1,12 @@
-import { Link } from 'react-router-dom'
-
 function Header() {
   return (
     <header className="header">
       <div className="header-content">
         <h1>
           <span role="img" aria-label="soccer">⚽</span>
-          Soccer Coach AI
+          Soccer Coach <span className="brand-ai">AI</span>
         </h1>
-        <nav className="nav-links">
-          <Link to="/">ホーム</Link>
-          <Link to="/history">履歴</Link>
-        </nav>
+        <span className="header-sub">AI解析 × 成長可視化 × 振り返り習慣</span>
       </div>
     </header>
   )
