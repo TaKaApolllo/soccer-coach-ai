@@ -195,6 +195,19 @@ class PoseEstimator:
         key_idx = self._pick_key_frame(poses)
         metrics = self._kick_metrics(poses, key_idx)
         score, breakdown = self._score(metrics)
+        key_angles = self._key_angles(poses, key_idx, metrics)
+
+        # 部位別スコア用にキーフレームのボール位置を検出（正規化画像座標へ）
+        ball_center_norm = None
+        if frames_bgr and 0 <= key_idx < len(frames_bgr):
+            kf = frames_bgr[key_idx]
+            kh, kw = kf.shape[:2]
+            ball_px = self._find_ball_center(kf)
+            if ball_px is not None and kw > 0 and kh > 0:
+                ball_center_norm = (ball_px[0] / kw, ball_px[1] / kh)
+        body_parts = self._analyze_body_parts(
+            poses, key_idx, metrics, key_angles, ball_center_norm
+        )
 
         return {
             "frames": [
@@ -215,9 +228,12 @@ class PoseEstimator:
             "score_message": self._score_message(score, breakdown),
             "score_breakdown": breakdown,
             "phases": [p.phase for p in poses],
-            "key_angles": self._key_angles(poses, key_idx, metrics),
+            "key_angles": key_angles,
             "timeline": self._motion_timeline(poses),
             "sub_scores": self._sub_scores(poses, metrics, breakdown),
+            "body_part_scores": body_parts["body_part_scores"],
+            "improvement_rankings": body_parts["improvement_rankings"],
+            "center_of_gravity": body_parts["center_of_gravity"],
         }
 
     # ------------------------------------------------------------------
@@ -319,18 +335,8 @@ class PoseEstimator:
             vals = [v for v in (p.angles.get("left_knee"), p.angles.get("right_knee")) if v is not None]
             return min(vals) if vals else None
 
-        # 蹴り足サイドを一度だけ決定する。フレームごとに min(left, right) を
-        # 蹴り足とみなすと、フレーム間で担当脚が入れ替わった際に別々の脚の
-        # 角度差から伸展速度を計算してしまうため、全フレーム中で膝角度が
-        # 最小になったフレームのその側（＝バックスイングが最も深い側）に固定する。
-        kicking_side = None
-        best_angle = None
-        for p in poses:
-            for side in ("left", "right"):
-                v = p.angles.get(f"{side}_knee")
-                if v is not None and (best_angle is None or v < best_angle):
-                    best_angle = v
-                    kicking_side = side
+        # 蹴り足サイドを一度だけ決定する（`_kicking_side` に共通化）。
+        kicking_side = self._kicking_side(poses)
 
         # インパクトの強さ: バックスイング→インパクトの膝伸展速度（蹴り足の系列のみ使用）
         ext_speed = 0.0
@@ -540,16 +546,40 @@ class PoseEstimator:
 
         return metrics
 
+    @staticmethod
+    def _band_score(value, lo, hi, tolerance) -> Optional[float]:
+        """理想レンジ [lo, hi] 内なら満点(1.0)、外れるほど減点。値が None なら None"""
+        if value is None:
+            return None
+        if lo <= value <= hi:
+            return 1.0
+        dist = (lo - value) if value < lo else (value - hi)
+        return max(0.0, 1.0 - dist / tolerance)
+
+    @staticmethod
+    def _kicking_side(poses: List["FramePose"]) -> Optional[str]:
+        """蹴り足サイドを一意に決定する。
+
+        フレームごとに min(left, right) を蹴り足とみなすとフレーム間で担当脚が
+        入れ替わりうるため、全フレーム中で膝角度が最小になった側（＝バックスイングが
+        最も深い側）に固定する。`_sub_scores` と共通のロジック。
+        """
+        kicking_side = None
+        best_angle = None
+        for p in poses:
+            for side in ("left", "right"):
+                v = p.angles.get(f"{side}_knee")
+                if v is not None and (best_angle is None or v < best_angle):
+                    best_angle = v
+                    kicking_side = side
+        return kicking_side
+
     def _score(self, metrics: dict) -> Tuple[int, List[dict]]:
         """指標を理想レンジと比較してスコア化"""
         breakdown = []
 
         def band_score(value, lo, hi, tolerance):
-            """理想レンジ [lo, hi] 内なら満点、外れるほど減点"""
-            if lo <= value <= hi:
-                return 1.0
-            dist = (lo - value) if value < lo else (value - hi)
-            return max(0.0, 1.0 - dist / tolerance)
+            return self._band_score(value, lo, hi, tolerance)
 
         checks = [
             ("backswing_knee_angle", "バックスイングの深さ", 60, 110, 50,
@@ -586,6 +616,357 @@ class PoseEstimator:
         confidence = metrics.get("detection_rate", 1.0)
         score = int(round(base * 100 * (0.7 + 0.3 * confidence)))
         return max(0, min(100, score)), breakdown
+
+    # ------------------------------------------------------------------
+    # 部位別スコアリングエンジン（軸足・蹴り足・上半身・バランス）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _lm_map(p: "FramePose") -> dict:
+        """FramePose のランドマークを {name: (x, y)}（正規化画像座標）に展開"""
+        return {lm["name"]: (lm["x"], lm["y"]) for lm in p.landmarks}
+
+    @staticmethod
+    def _status_for(score: int) -> str:
+        return "good" if score >= 75 else ("warn" if score >= 50 else "bad")
+
+    def _person_height_norm(self, poses: List["FramePose"]) -> Optional[float]:
+        """骨格の身長を正規化画像高さ（0-1）で近似（鼻〜足首 ≈ 身長の 88%）"""
+        heights = []
+        for p in poses:
+            lms = self._lm_map(p)
+            ankle = lms.get("left_ankle") or lms.get("right_ankle")
+            if "nose" in lms and ankle is not None:
+                h = abs(ankle[1] - lms["nose"][1]) / 0.88
+                if h > 0.05:
+                    heights.append(h)
+        return float(np.median(heights)) if heights else None
+
+    def _kick_direction(
+        self,
+        poses: List["FramePose"],
+        key_idx: int,
+        ball_center_norm: Optional[Tuple[float, float]],
+        kicking_side: Optional[str],
+    ) -> Optional[float]:
+        """蹴り方向（x 軸の符号: +1=右向き / -1=左向き）を推定。判定不能なら None
+
+        優先順位: ボール方向 → 蹴り足つま先のフレーム間移動 → 判定不能
+        """
+        if not poses:
+            return None
+        key = poses[min(key_idx, len(poses) - 1)]
+        lms = self._lm_map(key)
+
+        # 体の中心 x（腰の中点、なければ肩の中点）
+        body_x = None
+        if "left_hip" in lms and "right_hip" in lms:
+            body_x = (lms["left_hip"][0] + lms["right_hip"][0]) / 2
+        elif "left_shoulder" in lms and "right_shoulder" in lms:
+            body_x = (lms["left_shoulder"][0] + lms["right_shoulder"][0]) / 2
+
+        # 1) ボールの方向（体の中心から見てボールがある側）
+        if ball_center_norm is not None and body_x is not None:
+            if abs(ball_center_norm[0] - body_x) > 1e-3:
+                return 1.0 if ball_center_norm[0] >= body_x else -1.0
+
+        # 2) 蹴り足つま先のフレーム間移動方向
+        if kicking_side is not None:
+            toe = f"{kicking_side}_foot_index"
+            xs = [self._lm_map(p)[toe][0] for p in poses if toe in self._lm_map(p)]
+            if len(xs) >= 2:
+                dx = xs[-1] - xs[0]
+                if abs(dx) > 1e-3:
+                    return 1.0 if dx > 0 else -1.0
+
+        return None
+
+    def _center_of_gravity(
+        self,
+        poses: List["FramePose"],
+        key_idx: int,
+        plant_side: Optional[str],
+        height_norm: Optional[float],
+    ) -> dict:
+        """主要ランドマークの重み付き平均で重心を近似し、軸足への乗りを判定"""
+        key = poses[min(key_idx, len(poses) - 1)]
+        lms = self._lm_map(key)
+
+        def midpoint(a: str, b: str):
+            if a in lms and b in lms:
+                return ((lms[a][0] + lms[b][0]) / 2, (lms[a][1] + lms[b][1]) / 2)
+            return None
+
+        parts = [
+            (midpoint("left_hip", "right_hip"), 0.4),
+            (midpoint("left_shoulder", "right_shoulder"), 0.3),
+            (midpoint("left_knee", "right_knee"), 0.2),
+            (midpoint("left_ankle", "right_ankle"), 0.1),
+        ]
+        avail = [(pt, w) for pt, w in parts if pt is not None]
+        if not avail:
+            return {"x": None, "y": None, "over_plant_foot": False,
+                    "comment": "重心を計測できませんでした"}
+
+        wsum = sum(w for _, w in avail)
+        cog_x = sum(pt[0] * w for pt, w in avail) / wsum
+        cog_y = sum(pt[1] * w for pt, w in avail) / wsum
+
+        over = False
+        plant_ankle = lms.get(f"{plant_side}_ankle") if plant_side else None
+        if plant_ankle is not None:
+            threshold = 0.12 * height_norm if height_norm else 0.06
+            over = abs(cog_x - plant_ankle[0]) <= threshold
+
+        if plant_ankle is None:
+            comment = "軸足の位置が取得できず、重心の評価をスキップしました"
+        elif over:
+            comment = "重心が軸足の真上に乗っており、安定したフォームです"
+        else:
+            comment = "重心が軸足に乗っていません。軸足の真上に体重を乗せて踏み込みましょう"
+
+        return {
+            "x": round(cog_x, 4),
+            "y": round(cog_y, 4),
+            "over_plant_foot": bool(over),
+            "comment": comment,
+        }
+
+    def _analyze_body_parts(
+        self,
+        poses: List["FramePose"],
+        key_idx: int,
+        metrics: dict,
+        key_angles: List[dict],
+        ball_center_norm: Optional[Tuple[float, float]],
+    ) -> dict:
+        """部位別スコア・改善ランキング・重心を算出して返す
+
+        Returns: {"body_part_scores": {...}, "improvement_rankings": [...],
+                  "center_of_gravity": {...}}
+        """
+        empty = {
+            "body_part_scores": {},
+            "improvement_rankings": [],
+            "center_of_gravity": {"x": None, "y": None,
+                                  "over_plant_foot": False, "comment": "解析できませんでした"},
+        }
+        detected = [p for p in poses if p.landmarks]
+        if not detected:
+            return empty
+
+        kicking_side = self._kicking_side(poses)
+        plant_side = None
+        if kicking_side is not None:
+            plant_side = "right" if kicking_side == "left" else "left"
+
+        height_norm = self._person_height_norm(poses)
+        kick_dir = self._kick_direction(poses, key_idx, ball_center_norm, kicking_side)
+        cog = self._center_of_gravity(poses, key_idx, plant_side, height_norm)
+
+        key = poses[min(key_idx, len(poses) - 1)]
+        lms = self._lm_map(key)
+
+        def part_from_components(components: List[float]) -> int:
+            vals = [c for c in components if c is not None]
+            if not vals:
+                return 0
+            return int(round(float(np.mean(vals)) * 100))
+
+        # ---------------- 軸足 (plant_leg) ----------------
+        plant_knee = metrics.get("plant_leg_knee_angle")
+        plant_knee_band = self._band_score(plant_knee, 140, 175, 40)
+        plant_components = [plant_knee_band]
+        plant_comments: List[str] = []
+        ball_ratio = None
+        ball_too_far = False
+        if (ball_center_norm is not None and plant_side is not None
+                and height_norm and f"{plant_side}_ankle" in lms):
+            plant_ankle = lms[f"{plant_side}_ankle"]
+            ball_ratio = abs(ball_center_norm[0] - plant_ankle[0]) / height_norm
+            plant_components.append(self._band_score(ball_ratio, 0.15, 0.35, 0.20))
+            ball_too_far = ball_ratio > 0.35
+        plant_score = part_from_components(plant_components)
+        if ball_too_far:
+            plant_comments.append(
+                "軸足がボールから遠すぎます。ボールの真横、こぶし1〜2個分の位置に踏み込みましょう"
+            )
+        if plant_knee is not None and plant_knee > 178:
+            plant_comments.append("軸足の膝が伸びきっています。軽く曲げて衝撃を吸収しましょう")
+        if plant_score >= 75 and not plant_comments:
+            plant_comments.append("軸足の位置と膝のクッションが理想的です")
+        if not plant_comments:
+            plant_comments.append("軸足の膝の角度を理想レンジ(140〜175°)に近づけましょう")
+
+        # ---------------- 蹴り足 (kicking_leg) ----------------
+        backswing = metrics.get("backswing_knee_angle")
+        knee_impact = metrics.get("kicking_leg_knee_angle")
+        kick_components = [
+            self._band_score(backswing, 60, 110, 50),
+            self._band_score(knee_impact, 110, 150, 40),
+        ]
+        kick_score = part_from_components(kick_components)
+        kick_comments: List[str] = []
+        if backswing is not None and backswing > 120:
+            kick_comments.append(
+                "蹴り足の膝の振りが小さいため、ボールに力が伝わりにくいです。"
+                "かかとをお尻に近づけるように深く畳みましょう"
+            )
+        if knee_impact is not None and knee_impact < 110:
+            kick_comments.append("インパクトで膝が曲がりすぎています。しっかり振り抜きましょう")
+        if kick_score >= 75 and not kick_comments:
+            kick_comments.append("蹴り足のバックスイングとインパクトの角度が理想的です")
+        if not kick_comments:
+            kick_comments.append("バックスイングを深く、インパクトで膝を伸ばし切る意識を持ちましょう")
+
+        # ---------------- 上半身 (upper_body) ----------------
+        lean = metrics.get("torso_lean_at_impact", key.angles.get("torso_lean"))
+        pelvis = key.angles.get("pelvis_tilt")
+        upper_components = [
+            self._band_score(lean, 5, 25, 30),
+            self._band_score(pelvis, 3, 15, 15),
+        ]
+        # 符号付きの前後傾: 肩中点が腰中点に対し蹴り方向と逆側にあれば「後傾」
+        backward_lean = False
+        if (kick_dir is not None and "left_shoulder" in lms and "right_shoulder" in lms
+                and "left_hip" in lms and "right_hip" in lms):
+            shoulder_x = (lms["left_shoulder"][0] + lms["right_shoulder"][0]) / 2
+            hip_x = (lms["left_hip"][0] + lms["right_hip"][0]) / 2
+            # 蹴り方向に肩が出ていれば前傾(正)、逆側なら後傾(負)
+            lean_sign = (shoulder_x - hip_x) * kick_dir
+            if lean_sign < -0.01:
+                backward_lean = True
+        if backward_lean:
+            upper_components.append(0.2)  # 後傾は重大な欠点としてスコアを押し下げる
+        upper_score = part_from_components(upper_components)
+        upper_comments: List[str] = []
+        if backward_lean:
+            upper_comments.append(
+                "上半身が後ろに倒れているため、シュートが浮きやすくなります。"
+                "胸をボールにかぶせる意識を持ちましょう"
+            )
+        if lean is not None and lean > 25 and not backward_lean:
+            upper_comments.append("上体が前に倒れすぎています。目線を上げてバランスを保ちましょう")
+        if upper_score >= 75 and not upper_comments:
+            upper_comments.append("上半身の前傾と骨盤の使い方が安定しています")
+        if not upper_comments:
+            upper_comments.append("上体を適度に前傾させ、ボールに覆いかぶさる意識を持ちましょう")
+
+        # ---------------- バランス (balance) ----------------
+        arm = metrics.get("arm_extension")
+        arm_band = self._band_score(arm, 90, 170, 60)
+        cog_component = 1.0 if cog.get("over_plant_foot") else 0.35
+        balance_components = [arm_band, cog_component]
+        balance_score = part_from_components(balance_components)
+        balance_comments: List[str] = []
+        if not cog.get("over_plant_foot") and cog.get("x") is not None:
+            balance_comments.append(
+                "重心が軸足に乗っていません。軸足の真上に体重を乗せてから蹴りましょう"
+            )
+        if arm is not None and arm < 90:
+            balance_comments.append("腕をもっと開いて、上半身のバランスを取りましょう")
+        if balance_score >= 75 and not balance_comments:
+            balance_comments.append("腕でバランスを取り、重心が軸足にしっかり乗っています")
+        if not balance_comments:
+            balance_comments.append("腕を広げて重心を軸足に乗せ、安定して蹴りましょう")
+
+        body_part_scores = {
+            "plant_leg": {
+                "label": "軸足", "score": plant_score,
+                "status": self._status_for(plant_score),
+                "comments": plant_comments,
+                "angles": {"knee": round(float(plant_knee), 1) if plant_knee is not None else None},
+            },
+            "kicking_leg": {
+                "label": "蹴り足", "score": kick_score,
+                "status": self._status_for(kick_score),
+                "comments": kick_comments,
+                "angles": {
+                    "backswing": round(float(backswing), 1) if backswing is not None else None,
+                    "knee_impact": round(float(knee_impact), 1) if knee_impact is not None else None,
+                },
+            },
+            "upper_body": {
+                "label": "上半身", "score": upper_score,
+                "status": self._status_for(upper_score),
+                "comments": upper_comments,
+                "angles": {
+                    "lean": round(float(lean), 1) if lean is not None else None,
+                    "pelvis": round(float(pelvis), 1) if pelvis is not None else None,
+                },
+            },
+            "balance": {
+                "label": "バランス", "score": balance_score,
+                "status": self._status_for(balance_score),
+                "comments": balance_comments,
+                "angles": {"arm": round(float(arm), 1) if arm is not None else None},
+            },
+        }
+
+        rankings = self._improvement_rankings(key_angles, body_part_scores)
+
+        return {
+            "body_part_scores": body_part_scores,
+            "improvement_rankings": rankings,
+            "center_of_gravity": cog,
+        }
+
+    # key_angles の key と部位のひも付け（改善ランキング用）
+    _RANKING_META = {
+        "torso_lean": ("upper_body", "上半身", "体幹の傾きが理想から外れています",
+                       "上体を適度に前傾させ、ボールに覆いかぶさる意識を持ちましょう"),
+        "pelvis_tilt": ("upper_body", "上半身", "骨盤の傾きが理想から外れています",
+                        "骨盤を軽く前傾させ、力を伝えやすくしましょう"),
+        "support_leg": ("plant_leg", "軸足", "軸足の膝角度が理想から外れています",
+                        "軸足の膝を軽く曲げ、着地の衝撃を吸収しましょう"),
+        "backswing": ("kicking_leg", "蹴り足", "バックスイングの深さが理想から外れています",
+                      "かかとをお尻に近づけ、深くスイングしましょう"),
+        "knee_impact": ("kicking_leg", "蹴り足", "インパクト時の膝角度が理想から外れています",
+                        "インパクトで膝をしっかり伸ばし切りましょう"),
+        "ankle_impact": ("kicking_leg", "蹴り足", "足首の固定が理想から外れています",
+                         "足首を固定してミートの精度を高めましょう"),
+        "follow_through": ("kicking_leg", "蹴り足", "フォロースルーが理想から外れています",
+                           "蹴り足を最後まで大きく振り抜きましょう"),
+    }
+
+    def _improvement_rankings(self, key_angles: List[dict], body_part_scores: dict) -> List[dict]:
+        """key_angles の理想値からの乖離（正規化）と部位スコアで重大度順に並べる"""
+        candidates = []
+        for ka in key_angles:
+            meta = self._RANKING_META.get(ka["key"])
+            if meta is None:
+                continue
+            ideal = ka.get("ideal")
+            value = ka.get("value")
+            if not ideal or value is None:
+                continue
+            norm_dev = abs(value - ideal) / abs(ideal)
+            if norm_dev < 0.05:  # 乖離ゼロ扱い（理想フォーム）はランキングに載せない
+                continue
+            part, label, issue, advice = meta
+            part_score = body_part_scores.get(part, {}).get("score", 100)
+            if norm_dev >= 0.30 or part_score < 50:
+                severity = "high"
+            elif norm_dev >= 0.12 or part_score < 75:
+                severity = "mid"
+            else:
+                severity = "low"
+            candidates.append({
+                "part": part,
+                "label": label,
+                "issue": issue,
+                "advice": advice,
+                "delta_deg": round(abs(value - ideal), 1),
+                "severity": severity,
+                "_norm_dev": norm_dev,
+            })
+
+        candidates.sort(key=lambda c: c["_norm_dev"], reverse=True)
+        rankings = []
+        for rank, c in enumerate(candidates[:5], start=1):
+            c.pop("_norm_dev", None)
+            rankings.append({"rank": rank, **c})
+        return rankings
 
     # ------------------------------------------------------------------
     # 描画

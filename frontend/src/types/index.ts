@@ -96,6 +96,42 @@ export interface SubScores {
   injury_risk?: { level: string; comment: string; flags: string[] }
 }
 
+export type BodyPartStatus = 'good' | 'warn' | 'bad'
+
+export interface BodyPartScore {
+  label: string
+  score: number
+  status: BodyPartStatus
+  comments: string[]
+  angles: Record<string, number>
+}
+
+export interface BodyPartScores {
+  plant_leg?: BodyPartScore
+  kicking_leg?: BodyPartScore
+  upper_body?: BodyPartScore
+  balance?: BodyPartScore
+}
+
+export type ImprovementSeverity = 'high' | 'mid' | 'low'
+
+export interface ImprovementRanking {
+  rank: number
+  part: string
+  label: string
+  issue: string
+  advice: string
+  delta_deg: number
+  severity: ImprovementSeverity
+}
+
+export interface CenterOfGravity {
+  x: number
+  y: number
+  over_plant_foot: boolean
+  comment: string
+}
+
 export interface PoseResult {
   frames: PoseFrame[]
   annotated_images: string[]
@@ -110,6 +146,9 @@ export interface PoseResult {
   key_angles?: KeyAngle[]
   timeline?: TimelinePoint[]
   sub_scores?: SubScores
+  body_part_scores?: BodyPartScores
+  improvement_rankings?: ImprovementRanking[]
+  center_of_gravity?: CenterOfGravity
 }
 
 export interface PoseAnalysisResponse {
