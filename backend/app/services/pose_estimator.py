@@ -215,6 +215,163 @@ class PoseEstimator:
             "score_message": self._score_message(score, breakdown),
             "score_breakdown": breakdown,
             "phases": [p.phase for p in poses],
+            "key_angles": self._key_angles(poses, key_idx, metrics),
+            "timeline": self._motion_timeline(poses),
+            "sub_scores": self._sub_scores(poses, metrics, breakdown),
+        }
+
+    # ------------------------------------------------------------------
+    # 主要角度一覧（理想値付き・理想フォーム比較にも使用）
+    # ------------------------------------------------------------------
+
+    def _key_angles(self, poses: List[FramePose], key_idx: int, metrics: dict) -> List[dict]:
+        if not poses:
+            return []
+        key = poses[min(key_idx, len(poses) - 1)]
+        last = poses[-1]
+
+        def kicking_side_angle(frame_pose: FramePose, joint: str) -> Optional[float]:
+            """蹴り足（膝屈曲が大きい側）の関節角度"""
+            lk = frame_pose.angles.get("left_knee")
+            rk = frame_pose.angles.get("right_knee")
+            if lk is None and rk is None:
+                return None
+            side = "left" if (rk is None or (lk is not None and lk < rk)) else "right"
+            return frame_pose.angles.get(f"{side}_{joint}")
+
+        entries = [
+            ("torso_lean", "上半身の傾き", "LEAN",
+             key.angles.get("torso_lean"), 10, "理想 5〜25°"),
+            ("pelvis_tilt", "骨盤の傾き", "PELVIS",
+             key.angles.get("pelvis_tilt"), 8, "理想 前傾"),
+            ("support_leg", "支持脚の角度", "SUPPORT LEG",
+             metrics.get("plant_leg_knee_angle"), 165, "理想 165°"),
+            ("backswing", "蹴り脚の振り上げ", "BACKSWING",
+             metrics.get("backswing_knee_angle"), 95, "理想 95°"),
+            ("knee_impact", "膝の角度（インパクト時）", "KNEE",
+             metrics.get("kicking_leg_knee_angle"), 130, "理想 130°"),
+            ("ankle_impact", "足首の角度（インパクト時）", "ANKLE",
+             kicking_side_angle(key, "ankle"), 140, "理想 140°"),
+            ("follow_through", "フォロースルー角度", "FOLLOW THROUGH",
+             kicking_side_angle(last, "hip"), 130, "理想 130°"),
+        ]
+
+        result = []
+        for keyname, label, label_en, value, ideal, ideal_text in entries:
+            if value is None:
+                continue
+            result.append({
+                "key": keyname,
+                "label": label,
+                "label_en": label_en,
+                "value": round(float(value), 1),
+                "ideal": ideal,
+                "ideal_text": ideal_text,
+            })
+        return result
+
+    # ------------------------------------------------------------------
+    # モーションタイムライン（フレーム間の動作強度）
+    # ------------------------------------------------------------------
+
+    def _motion_timeline(self, poses: List[FramePose]) -> List[dict]:
+        """関節の移動量から各フレームの動作強度 (0-100) を算出"""
+        if len(poses) < 2:
+            return [
+                {"frame_index": p.frame_index, "phase": p.phase, "intensity": 0}
+                for p in poses
+            ]
+
+        def lm_map(p: FramePose) -> dict:
+            return {lm["name"]: (lm["x"], lm["y"]) for lm in p.landmarks}
+
+        track = ["left_knee", "right_knee", "left_ankle", "right_ankle",
+                 "left_hip", "right_hip", "left_wrist", "right_wrist"]
+        raw = [0.0]
+        for prev, cur in zip(poses, poses[1:]):
+            pm, cm = lm_map(prev), lm_map(cur)
+            ds = [
+                math.hypot(cm[k][0] - pm[k][0], cm[k][1] - pm[k][1])
+                for k in track if k in pm and k in cm
+            ]
+            raw.append(float(np.mean(ds)) if ds else 0.0)
+
+        peak = max(raw) or 1.0
+        return [
+            {
+                "frame_index": p.frame_index,
+                "phase": p.phase,
+                "intensity": int(round(v / peak * 100)),
+            }
+            for p, v in zip(poses, raw)
+        ]
+
+    # ------------------------------------------------------------------
+    # サブスコア（インパクト・安定性・効率・ケガのリスク）
+    # ------------------------------------------------------------------
+
+    def _sub_scores(self, poses: List[FramePose], metrics: dict, breakdown: List[dict]) -> dict:
+        detected = [p for p in poses if p.landmarks]
+        if not detected:
+            return {}
+
+        def kicking_knee(p: FramePose) -> Optional[float]:
+            vals = [v for v in (p.angles.get("left_knee"), p.angles.get("right_knee")) if v is not None]
+            return min(vals) if vals else None
+
+        # インパクトの強さ: バックスイング→インパクトの膝伸展速度
+        knee_series = [kicking_knee(p) for p in poses]
+        ext_speed = 0.0
+        for a, b in zip(knee_series, knee_series[1:]):
+            if a is not None and b is not None:
+                ext_speed = max(ext_speed, b - a)  # 伸展方向（角度が増える）の最大変化
+        impact = int(np.clip(ext_speed / 55.0 * 100, 5, 100))
+
+        # フォームの安定性: 体幹の傾きと軸足膝角のばらつき
+        leans = [p.angles["torso_lean"] for p in detected if "torso_lean" in p.angles]
+        plant = [max(v for v in (p.angles.get("left_knee"), p.angles.get("right_knee")) if v is not None)
+                 for p in detected if kicking_knee(p) is not None]
+        stability = 100.0
+        if len(leans) >= 2:
+            stability -= float(np.std(leans)) * 3.5
+        if len(plant) >= 2:
+            stability -= float(np.std(plant)) * 1.2
+        stability = int(np.clip(stability, 10, 100))
+
+        # パワー効率: バックスイングの深さと腕バランスの複合（breakdown を再利用）
+        eff_items = [b["score"] for b in breakdown if b["key"] in ("backswing_knee_angle", "arm_extension")]
+        efficiency = int(np.clip(np.mean(eff_items) if eff_items else 50, 5, 100))
+
+        # ケガのリスク: 危険な姿勢フラグの数で判定
+        flags = []
+        plant_angle = metrics.get("plant_leg_knee_angle")
+        if plant_angle is not None and plant_angle > 178:
+            flags.append("軸足の膝が伸びきっており、着地の衝撃が膝に直接伝わります")
+        if plant_angle is not None and plant_angle < 120:
+            flags.append("軸足が深く沈み込みすぎており、膝への負担が大きい姿勢です")
+        lean_val = metrics.get("torso_lean_at_impact")
+        if lean_val is not None and lean_val > 35:
+            flags.append("上体の傾きが大きく、腰への負担が心配です")
+
+        risk_level = "低" if not flags else ("中" if len(flags) == 1 else "高")
+        risk_comment = "安全なフォームです。継続して良いです" if not flags else flags[0]
+
+        def label_for(v: int, kind: str) -> str:
+            table = {
+                "impact": [(85, "非常に強い"), (65, "強い"), (45, "標準的"), (0, "伸びしろあり")],
+                "stability": [(85, "安定している"), (65, "概ね安定"), (45, "ややばらつき"), (0, "ばらつき大")],
+                "efficiency": [(85, "効率的"), (65, "良好"), (45, "標準的"), (0, "改善余地あり")],
+            }[kind]
+            return next(lbl for th, lbl in table if v >= th)
+
+        return {
+            "impact_strength": {"score": impact, "label": label_for(impact, "impact"),
+                                "detail": "理想に近いインパクト" if impact >= 80 else "膝の振り抜き速度から算出"},
+            "stability": {"score": stability, "label": label_for(stability, "stability"),
+                          "detail": "一貫性のあるフォーム" if stability >= 80 else "フレーム間のフォームのばらつき"},
+            "power_efficiency": {"score": efficiency, "label": label_for(efficiency, "efficiency"),
+                                 "detail": "エネルギーの使い方が良い" if efficiency >= 80 else "バックスイングと腕の使い方から算出"},
+            "injury_risk": {"level": risk_level, "comment": risk_comment, "flags": flags},
         }
 
     @staticmethod
@@ -274,6 +431,13 @@ class PoseEstimator:
             lean = _lean_from_vertical(shoulder_mid, hip_mid)
             if lean is not None:
                 angles["torso_lean"] = round(lean, 1)
+
+        # 骨盤の傾き（左右股関節を結ぶ線の水平からの傾き）
+        if get(23) and get(24):
+            dx = pts[24][0] - pts[23][0]
+            dy = pts[24][1] - pts[23][1]
+            if abs(dx) > 1e-6:
+                angles["pelvis_tilt"] = round(abs(math.degrees(math.atan2(dy, dx))), 1)
 
         return angles
 
@@ -634,10 +798,11 @@ class PoseEstimator:
             cv2.circle(canvas, head_c, head_r, RIM, 1, cv2.LINE_AA)
 
     def _draw_avatar_face(self, frame: np.ndarray, pts: dict) -> None:
-        """アニメ風のオリジナルアバターフェイスで顔を覆う（匿名化オプション）
+        """リアル調のアバターヘッドで顔を覆う（匿名化オプション）
 
         鼻(0)と両耳(7, 8)から頭のサイズ・向きを推定し、
-        実写の顔全体をマスコット風の顔で置き換える。
+        肌のシェーディング・自然な目鼻立ち・ソフトな髪を持つ
+        3D アバター風の頭部（オリジナル描画）に置き換える。
         """
         nose = pts.get(0)
         if nose is None:
@@ -655,7 +820,7 @@ class PoseEstimator:
             head_r = int(sw * 0.42)
         else:
             return
-        head_r = max(10, head_r)
+        head_r = max(12, head_r)
 
         cx, cy = int(nose[0]), int(nose[1]) - head_r // 6
 
@@ -670,52 +835,102 @@ class PoseEstimator:
         elif ear_r:
             facing = -0.6  # 右耳のみ見える → 左向き
 
-        SKIN = (178, 208, 244)      # 明るい肌色 (BGR)
-        SKIN_EDGE = (120, 150, 200)
-        HAIR = (70, 52, 28)         # ダークネイビーの髪
-        EYE = (60, 45, 25)
-        MOUTH = (98, 90, 190)
+        h, w = frame.shape[:2]
 
-        # 頭部（少し縦長の楕円）
-        axes = (head_r, int(head_r * 1.08))
-        cv2.ellipse(frame, (cx, cy), axes, 0, 0, 360, SKIN, -1, cv2.LINE_AA)
-        cv2.ellipse(frame, (cx, cy), axes, 0, 0, 360, SKIN_EDGE, 2, cv2.LINE_AA)
+        # 頭部は別レイヤーに描いてから、フェザー付きマスクで合成する
+        # （ソフトシェーディングで実写になじむリアル調に仕上げるため）
+        layer = frame.copy()
 
-        # 髪（上半分のアーチ + 前髪のギザギザ）
-        cv2.ellipse(frame, (cx, cy - int(head_r * 0.12)),
-                    (head_r, int(head_r * 0.95)), 0, 180, 360, HAIR, -1, cv2.LINE_AA)
-        fringe_y = cy - int(head_r * 0.25)
-        n_fringe = 4
-        for k in range(n_fringe):
-            fx = cx - head_r + int((2 * head_r / n_fringe) * (k + 0.5))
-            tri = np.array([
-                [fx - head_r // 5, fringe_y - head_r // 6],
-                [fx + head_r // 5, fringe_y - head_r // 6],
-                [fx, fringe_y + head_r // 4],
-            ], dtype=np.int32)
-            cv2.fillPoly(frame, [tri], HAIR, cv2.LINE_AA)
+        SKIN = (150, 182, 224)        # 自然な肌色 (BGR)
+        SKIN_SHADOW = (110, 140, 188)
+        SKIN_LIGHT = (176, 206, 240)
+        HAIR = (34, 30, 24)           # ダークブラウン
+        HAIR_LIGHT = (62, 56, 46)
+        BROW = (48, 44, 38)
+        EYE_DARK = (40, 34, 26)
+        LIP = (112, 118, 178)
 
-        # 目（向きに応じて左右にオフセットする大きめのアニメ目）
-        eye_dy = int(head_r * 0.12)
-        eye_dx = int(head_r * 0.42)
-        shift = int(facing * head_r * 0.22)
-        eye_w, eye_h = max(3, int(head_r * 0.16)), max(4, int(head_r * 0.26))
+        axes = (head_r, int(head_r * 1.14))
+        shift = int(facing * head_r * 0.24)
+
+        # --- 肌のベースとシェーディング ---
+        cv2.ellipse(layer, (cx, cy), axes, 0, 0, 360, SKIN, -1, cv2.LINE_AA)
+        # 顎下と輪郭の影
+        cv2.ellipse(layer, (cx + int(head_r * 0.18) - shift, cy + int(head_r * 0.3)),
+                    (int(head_r * 0.85), int(head_r * 0.9)), 0, 20, 160, SKIN_SHADOW, -1, cv2.LINE_AA)
+        cv2.ellipse(layer, (cx, cy), axes, 0, 0, 360, SKIN, int(head_r * 0.28), cv2.LINE_AA)
+        # 額のハイライト
+        cv2.ellipse(layer, (cx - int(head_r * 0.2) + shift, cy - int(head_r * 0.35)),
+                    (int(head_r * 0.5), int(head_r * 0.35)), 0, 0, 360, SKIN_LIGHT, -1, cv2.LINE_AA)
+
+        # --- 耳（横向きのとき見える側だけ強調） ---
+        for side, vis in ((-1, facing <= 0.3), (1, facing >= -0.3)):
+            if vis:
+                ex = cx + side * int(head_r * 0.96) + shift // 2
+                cv2.ellipse(layer, (ex, cy + int(head_r * 0.1)),
+                            (int(head_r * 0.14), int(head_r * 0.22)), 0, 0, 360, SKIN, -1, cv2.LINE_AA)
+                cv2.ellipse(layer, (ex, cy + int(head_r * 0.1)),
+                            (int(head_r * 0.14), int(head_r * 0.22)), 0, 0, 360, SKIN_SHADOW, 1, cv2.LINE_AA)
+
+        # --- 髪（ショートヘア: 上部を覆い、こめかみへ自然に下ろす） ---
+        cv2.ellipse(layer, (cx + shift // 3, cy - int(head_r * 0.28)),
+                    (int(head_r * 1.02), int(head_r * 0.78)), 0, 180, 360, HAIR, -1, cv2.LINE_AA)
+        # 生え際（ゆるい波）と、もみあげ
+        hairline_y = cy - int(head_r * 0.42)
+        for k in range(5):
+            hx = cx - head_r + int((2 * head_r / 5) * (k + 0.5)) + shift // 2
+            cv2.ellipse(layer, (hx, hairline_y), (int(head_r * 0.18), int(head_r * 0.14)),
+                        0, 0, 180, HAIR, -1, cv2.LINE_AA)
+        for side in (-1, 1):
+            sx = cx + side * int(head_r * 0.88) + shift // 2
+            cv2.ellipse(layer, (sx, cy - int(head_r * 0.05)),
+                        (int(head_r * 0.16), int(head_r * 0.38)), side * 12, 0, 360, HAIR, -1, cv2.LINE_AA)
+        # 髪のツヤ
+        cv2.ellipse(layer, (cx - int(head_r * 0.25) + shift, cy - int(head_r * 0.72)),
+                    (int(head_r * 0.4), int(head_r * 0.16)), -18, 0, 360, HAIR_LIGHT, -1, cv2.LINE_AA)
+
+        # --- 眉と目（自然なアーモンド形・向きに追従） ---
+        eye_dy = int(head_r * 0.02)
+        eye_dx = int(head_r * 0.4)
+        eye_w = max(3, int(head_r * 0.2))
+        eye_h = max(2, int(head_r * 0.09))
         for side in (-1, 1):
             ex = cx + side * eye_dx + shift
             ey = cy + eye_dy
-            cv2.ellipse(frame, (ex, ey), (eye_w, eye_h), 0, 0, 360, (255, 255, 255), -1, cv2.LINE_AA)
-            cv2.ellipse(frame, (ex, ey), (eye_w, eye_h), 0, 0, 360, EYE, 1, cv2.LINE_AA)
-            cv2.circle(frame, (ex + shift // 3, ey + eye_h // 6), max(2, int(eye_w * 0.62)), EYE, -1, cv2.LINE_AA)
-            cv2.circle(frame, (ex + shift // 3 - eye_w // 3, ey - eye_h // 4),
-                       max(1, eye_w // 3), (255, 255, 255), -1, cv2.LINE_AA)
+            # 眉
+            cv2.ellipse(layer, (ex, ey - int(head_r * 0.2)), (eye_w, max(1, eye_h // 2)),
+                        side * 8, 180, 360, BROW, max(2, head_r // 14), cv2.LINE_AA)
+            # 目のくぼみの影 → 白目 → 虹彩 → ハイライト → 上まぶたライン
+            cv2.ellipse(layer, (ex, ey), (eye_w, eye_h + 1), 0, 0, 360, SKIN_SHADOW, -1, cv2.LINE_AA)
+            cv2.ellipse(layer, (ex, ey), (eye_w - 1, eye_h), 0, 0, 360, (245, 245, 245), -1, cv2.LINE_AA)
+            iris_x = ex + shift // 2
+            cv2.circle(layer, (iris_x, ey), max(2, int(eye_h * 0.95)), EYE_DARK, -1, cv2.LINE_AA)
+            cv2.circle(layer, (iris_x - 1, ey - 1), max(1, eye_h // 3), (230, 230, 230), -1, cv2.LINE_AA)
+            cv2.ellipse(layer, (ex, ey - 1), (eye_w, eye_h), 0, 180, 360, EYE_DARK, max(1, head_r // 22), cv2.LINE_AA)
 
-        # 口（小さな笑顔の弧）と頬
-        mouth_y = cy + int(head_r * 0.55)
-        cv2.ellipse(frame, (cx + shift, mouth_y), (max(3, head_r // 5), max(2, head_r // 8)),
-                    0, 20, 160, MOUTH, 2, cv2.LINE_AA)
-        for side in (-1, 1):
-            cv2.circle(frame, (cx + side * int(head_r * 0.58) + shift, cy + int(head_r * 0.38)),
-                       max(2, head_r // 8), (150, 168, 250), -1, cv2.LINE_AA)
+        # --- 鼻（陰影のみで表現） ---
+        nx = cx + shift
+        cv2.line(layer, (nx, cy + int(head_r * 0.08)), (nx - head_r // 12, cy + int(head_r * 0.34)),
+                 SKIN_SHADOW, max(1, head_r // 16), cv2.LINE_AA)
+        cv2.ellipse(layer, (nx, cy + int(head_r * 0.38)), (max(2, head_r // 9), max(1, head_r // 18)),
+                    0, 0, 180, SKIN_SHADOW, max(1, head_r // 20), cv2.LINE_AA)
+
+        # --- 口（引き締まった自然な口元） ---
+        my = cy + int(head_r * 0.62)
+        cv2.ellipse(layer, (nx, my), (max(3, int(head_r * 0.26)), max(1, head_r // 14)),
+                    0, 0, 180, LIP, max(2, head_r // 12), cv2.LINE_AA)
+        cv2.ellipse(layer, (nx, my + max(1, head_r // 16)), (max(2, int(head_r * 0.18)), max(1, head_r // 20)),
+                    0, 0, 180, SKIN_SHADOW, 1, cv2.LINE_AA)
+
+        # --- ソフトブラーで滑らかにし、フェザーマスクで合成 ---
+        blur_k = max(3, (head_r // 6) | 1)
+        layer = cv2.GaussianBlur(layer, (blur_k, blur_k), 0)
+
+        mask = np.zeros((h, w), dtype=np.float32)
+        cv2.ellipse(mask, (cx, cy), (int(axes[0] * 1.12), int(axes[1] * 1.1)), 0, 0, 360, 1.0, -1)
+        feather = max(3, (head_r // 4) | 1)
+        mask = cv2.GaussianBlur(mask, (feather, feather), 0)[..., None]
+        np.copyto(frame, (layer * mask + frame * (1.0 - mask)).astype(np.uint8))
 
     @staticmethod
     def _draw_dashed_circle(frame: np.ndarray, center, radius: int, color, dashes: int = 12) -> None:

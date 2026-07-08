@@ -68,6 +68,34 @@ export interface ScoreBreakdownItem {
   description: string
 }
 
+export interface KeyAngle {
+  key: string
+  label: string
+  label_en: string
+  value: number
+  ideal: number
+  ideal_text: string
+}
+
+export interface TimelinePoint {
+  frame_index: number
+  phase: string
+  intensity: number
+}
+
+export interface SubScore {
+  score: number
+  label: string
+  detail: string
+}
+
+export interface SubScores {
+  impact_strength?: SubScore
+  stability?: SubScore
+  power_efficiency?: SubScore
+  injury_risk?: { level: string; comment: string; flags: string[] }
+}
+
 export interface PoseResult {
   frames: PoseFrame[]
   annotated_images: string[]
@@ -79,6 +107,9 @@ export interface PoseResult {
   score_message?: { headline: string; detail: string }
   score_breakdown: ScoreBreakdownItem[]
   phases: string[]
+  key_angles?: KeyAngle[]
+  timeline?: TimelinePoint[]
+  sub_scores?: SubScores
 }
 
 export interface PoseAnalysisResponse {
@@ -89,8 +120,10 @@ export interface PoseAnalysisResponse {
   score: number | null
   pose: PoseResult | null
   pose_error: string | null
-  ball_speed: { speed_kmh: number; approximate: boolean } | null
+  ball_speed: { speed_kmh: number; approximate: boolean; delta_vs_avg?: number } | null
   kick_angle_range: { min: number; max: number } | null
+  frame_times?: number[] | null
+  duration?: number | null
   ai_feedback: AIFeedback
 }
 

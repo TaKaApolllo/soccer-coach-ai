@@ -26,7 +26,7 @@ ai_analyzer = AIAnalyzer()
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 
 
-def _load_frames(file_path: str, max_frames: int = 8):
+def _load_frames(file_path: str, max_frames: int = 10):
     """アップロードファイルから解析用フレーム (BGR) とインデックス・fps を取り出す"""
     if video_processor.is_video(file_path):
         cap = cv2.VideoCapture(file_path)
@@ -132,6 +132,16 @@ async def analyze_pose(
                 )
             except Exception:
                 ball_speed = None
+        # 自分の過去解析の平均初速との差分
+        if ball_speed is not None:
+            past_speeds = []
+            for item in db.list_analyses(limit=20, include_payload=True):
+                bs = item.get("analysis", {}).get("ball_speed")
+                if bs and bs.get("speed_kmh"):
+                    past_speeds.append(bs["speed_kmh"])
+            if past_speeds:
+                avg = sum(past_speeds) / len(past_speeds)
+                ball_speed["delta_vs_avg"] = round(ball_speed["speed_kmh"] - avg)
         knee_angles = [
             min(a for a in (f["angles"].get("left_knee"), f["angles"].get("right_knee")) if a is not None)
             for f in pose_result["frames"]
@@ -140,12 +150,18 @@ async def analyze_pose(
         if knee_angles:
             kick_angle_range = {"min": round(min(knee_angles)), "max": round(max(knee_angles))}
 
+    # スクラバー用のフレーム時刻（秒）と総再生時間
+    frame_times = [round(idx / fps, 2) for idx in frame_indices] if fps > 0 else None
+    duration = round(frame_indices[-1] / fps, 2) if fps > 0 and frame_indices else None
+
     payload = {
         "pose": pose_result,
         "pose_error": pose_error,
         "ai_feedback": ai_feedback,
         "ball_speed": ball_speed,
         "kick_angle_range": kick_angle_range,
+        "frame_times": frame_times,
+        "duration": duration,
         "context": context,
     }
 
@@ -162,5 +178,7 @@ async def analyze_pose(
         "pose_error": pose_error,
         "ball_speed": ball_speed,
         "kick_angle_range": kick_angle_range,
+        "frame_times": frame_times,
+        "duration": duration,
         "ai_feedback": ai_feedback,
     }

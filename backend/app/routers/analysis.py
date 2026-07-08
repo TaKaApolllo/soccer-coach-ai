@@ -135,6 +135,33 @@ async def get_latest_analysis(analysis_type: str):
     raise HTTPException(status_code=404, detail="該当する解析結果がありません")
 
 
+@router.get("/history/{analysis_id}/thumbnail")
+async def get_analysis_thumbnail(analysis_id: str):
+    """解析結果のサムネイル画像（キーフレーム）を返す"""
+    import base64
+
+    from fastapi import Response
+
+    item = db.get_analysis(analysis_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="解析結果が見つかりません")
+
+    payload = item.get("analysis", {})
+    b64 = None
+    pose_payload = payload.get("pose")
+    if pose_payload and pose_payload.get("annotated_images"):
+        key = pose_payload.get("key_frame_index", 0)
+        images = pose_payload["annotated_images"]
+        b64 = images[min(key, len(images) - 1)]
+    elif payload.get("annotated_image"):
+        b64 = payload["annotated_image"]
+
+    if not b64:
+        raise HTTPException(status_code=404, detail="サムネイルがありません")
+
+    return Response(content=base64.b64decode(b64), media_type="image/jpeg")
+
+
 @router.get("/history/{analysis_id}")
 async def get_analysis(analysis_id: str):
     """特定の解析結果を取得"""

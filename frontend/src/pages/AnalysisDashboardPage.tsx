@@ -70,7 +70,11 @@ function AnalysisDashboardPage() {
       if (latest) setFormation({ ...latest.analysis, id: latest.id })
     })
     api.getLatestAnalysis<PoseAnalysisResponse>('pose').then((latest) => {
-      if (latest) setPoseResult({ ...latest.analysis, id: latest.id } as PoseAnalysisResponse)
+      if (latest) {
+        const res = latest.analysis as PoseAnalysisResponse
+        const score = (latest as unknown as { score?: number }).score ?? res.pose?.score ?? null
+        setPoseResult({ ...res, id: latest.id, score })
+      }
     })
   }, [])
 
@@ -302,7 +306,10 @@ function AnalysisDashboardPage() {
         {/* ============ 中央カラム: キックフォーム分析 + AIコーチ ============ */}
         <div className="tactica-col">
           <div className="card">
-            <h3 className="card-title">キックフォーム分析</h3>
+            <h3 className="card-title">
+              キックフォーム分析
+              <Link to="/kick" className="title-link">詳細分析を開く ›</Link>
+            </h3>
 
             {!poseResult && (
               <p className="note-text" style={{ marginBottom: 10 }}>
