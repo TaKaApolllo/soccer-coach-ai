@@ -319,12 +319,26 @@ class PoseEstimator:
             vals = [v for v in (p.angles.get("left_knee"), p.angles.get("right_knee")) if v is not None]
             return min(vals) if vals else None
 
-        # インパクトの強さ: バックスイング→インパクトの膝伸展速度
-        knee_series = [kicking_knee(p) for p in poses]
+        # 蹴り足サイドを一度だけ決定する。フレームごとに min(left, right) を
+        # 蹴り足とみなすと、フレーム間で担当脚が入れ替わった際に別々の脚の
+        # 角度差から伸展速度を計算してしまうため、全フレーム中で膝角度が
+        # 最小になったフレームのその側（＝バックスイングが最も深い側）に固定する。
+        kicking_side = None
+        best_angle = None
+        for p in poses:
+            for side in ("left", "right"):
+                v = p.angles.get(f"{side}_knee")
+                if v is not None and (best_angle is None or v < best_angle):
+                    best_angle = v
+                    kicking_side = side
+
+        # インパクトの強さ: バックスイング→インパクトの膝伸展速度（蹴り足の系列のみ使用）
         ext_speed = 0.0
-        for a, b in zip(knee_series, knee_series[1:]):
-            if a is not None and b is not None:
-                ext_speed = max(ext_speed, b - a)  # 伸展方向（角度が増える）の最大変化
+        if kicking_side is not None:
+            knee_series = [p.angles.get(f"{kicking_side}_knee") for p in poses]
+            for a, b in zip(knee_series, knee_series[1:]):
+                if a is not None and b is not None:
+                    ext_speed = max(ext_speed, b - a)  # 伸展方向（角度が増える）の最大変化
         impact = int(np.clip(ext_speed / 55.0 * 100, 5, 100))
 
         # フォームの安定性: 体幹の傾きと軸足膝角のばらつき

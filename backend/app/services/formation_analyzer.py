@@ -40,11 +40,13 @@ ROLE_BY_LINE = {0: "DF", 1: "MF", 2: "FW", 3: "FW"}
 @dataclass
 class FormationPlayer:
     index: int                      # 検出時のインデックス
-    x: float                        # 0-1 (自陣ゴール→敵陣ゴール)
-    y: float                        # 0-1 (タッチライン間)
+    x: float                        # 0-1 (自陣ゴール→敵陣ゴール、攻撃方向で正規化済み)
+    y: float                        # 0-1 (タッチライン間、攻撃方向で正規化済み)
     role: str = "MF"
     line: int = -1
     is_goalkeeper: bool = False
+    raw_x: float = 0.0              # 0-1 検出時の生ピッチ座標（フリップ前）
+    raw_y: float = 0.0              # ボール・パス候補・オフサイドラインと同じ座標系
     snapped_x: float = 0.0          # テンプレート整形後の配置座標
     snapped_y: float = 0.0
 
@@ -80,21 +82,32 @@ class FormationAnalyzer:
         if len(positions) < 3:
             tf.formation = "判定不可（選手数不足）"
             for (x, y), idx in zip(positions, indices):
-                tf.players.append(FormationPlayer(index=idx, x=x, y=y, snapped_x=x, snapped_y=y))
+                tf.players.append(
+                    FormationPlayer(index=idx, x=x, y=y, raw_x=x, raw_y=y, snapped_x=x, snapped_y=y)
+                )
             return tf
 
         pts = np.array(positions, dtype=np.float64)
+        raw_pts = pts.copy()  # 生の検出座標（フリップ前）。ルーターの detected_x/y に使う
 
         # 攻撃方向の推定: 選手の重心が左寄りなら左→右に攻めるとみなす
         if attack_left_to_right is None:
             attack_left_to_right = pts[:, 0].mean() <= 0.5
         if not attack_left_to_right:
+            # フリップは内部のライン分割・整形配置（snapped_x/y）計算専用。
+            # raw_x/raw_y は生座標のまま保持し、検出位置ビューの破壊的反転を防ぐ。
             pts[:, 0] = 1.0 - pts[:, 0]
             pts[:, 1] = 1.0 - pts[:, 1]
 
         players = [
-            FormationPlayer(index=idx, x=float(p[0]), y=float(p[1]))
-            for p, idx in zip(pts, indices)
+            FormationPlayer(
+                index=idx,
+                x=float(p[0]),
+                y=float(p[1]),
+                raw_x=float(rp[0]),
+                raw_y=float(rp[1]),
+            )
+            for p, rp, idx in zip(pts, raw_pts, indices)
         ]
 
         # GK: 色ヒントがあれば優先、なければ最後方（x 最小）の選手。

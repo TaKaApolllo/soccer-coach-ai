@@ -46,6 +46,8 @@ function PitchView({ teams, ball, useSnapped = true, space, passing, offside }: 
       const y = teamIdx === 0 ? p.board_y : 1 - p.board_y
       return [m + x * fw, m + y * fh]
     }
+    // 検出位置ビュー: detected_x/y は生のピッチ座標（フリップなし）。
+    // ボール・支配率グリッド・パス候補・オフサイドラインと同じ座標系。
     return [m + p.detected_x * fw, m + p.detected_y * fh]
   }
 

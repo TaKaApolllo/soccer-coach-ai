@@ -121,17 +121,24 @@ class TacticalAnalyzer:
 
         最後方（GK 側）の選手がどちらのゴールに近いかで守る側を決める。
         判定が両チームで衝突した場合は重心の左右で振り分ける。
+        片方のチームの座標が空の場合は、非空チームの方向をその座標から推定し、
+        空チームは必ずその逆方向にする（両チーム同方向のまま返さない）。
         """
-        result = []
+        result: List[Optional[bool]] = [None, None]
         for t in (0, 1):
             xs = [p[0] for p in team_positions[t]]
             if not xs:
-                result.append(t == 0)
                 continue
             # x=0 側の端により深い選手がいる → x=0 のゴールを守る → 左→右に攻める
-            result.append(min(xs) < 1.0 - max(xs))
+            result[t] = min(xs) < 1.0 - max(xs)
 
-        if result[0] == result[1] and team_positions[0] and team_positions[1]:
+        if result[0] is None and result[1] is None:
+            return [True, False]
+        if result[0] is None:
+            result[0] = not result[1]
+        elif result[1] is None:
+            result[1] = not result[0]
+        elif result[0] == result[1]:
             m0 = float(np.mean([p[0] for p in team_positions[0]]))
             m1 = float(np.mean([p[0] for p in team_positions[1]]))
             result = [m0 <= m1, m1 < m0]
@@ -274,9 +281,19 @@ class TacticalAnalyzer:
         if not angles:
             return 0
         count_score = min(len(angles), 5) / 5 * 60
-        # 角度の広がり（円周分散の簡易版）
-        spread = np.std(angles) if len(angles) > 1 else 0.3
-        spread_score = min(spread / 1.5, 1.0) * 40
+        # 角度の広がり（円周統計）: atan2 の角度は ±π をまたぐと通常の std が
+        # 破綻する（例: +3.0 rad と -3.0 rad は実際は約20°しか離れていないのに
+        # std は約3 になる）ため、平均合成ベクトル長 R を使う。
+        # R = |mean(exp(iθ))| は 1（全員が同じ方向）〜 0（全方位に分散）を取るので、
+        # spread = 1 - R として「広がり」の指標にする。
+        if len(angles) > 1:
+            angles_arr = np.array(angles)
+            mean_vector = np.mean(np.exp(1j * angles_arr))
+            r = np.abs(mean_vector)
+            spread = 1.0 - float(r)
+        else:
+            spread = 0.2
+        spread_score = float(np.clip(spread * 40, 0, 40))
         return int(np.clip(count_score + spread_score, 0, 100))
 
     @staticmethod

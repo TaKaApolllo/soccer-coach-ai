@@ -362,8 +362,8 @@ async def analyze_formation(
                     "index": pl.index,
                     "role": pl.role,
                     "is_goalkeeper": pl.is_goalkeeper,
-                    "detected_x": round(pl.x, 3),
-                    "detected_y": round(pl.y, 3),
+                    "detected_x": round(pl.raw_x, 3),
+                    "detected_y": round(pl.raw_y, 3),
                     "board_x": round(pl.snapped_x, 3),
                     "board_y": round(pl.snapped_y, 3),
                 }

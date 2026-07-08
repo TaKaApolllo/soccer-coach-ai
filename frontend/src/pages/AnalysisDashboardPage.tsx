@@ -114,7 +114,6 @@ function AnalysisDashboardPage() {
   const coaching = formation?.coaching ?? null
   const focusTactics = tactics?.teams?.find((t) => t.team === (coaching?.focus_team ?? 0)) ?? null
   const coachContent = coaching?.levels?.[coachLevel]
-  const attackPhase = formation?.phases?.teams?.find((t) => t.team === 0)?.attack
   const pose = poseResult?.pose ?? null
 
   const lineGapStatus = focusTactics
@@ -165,7 +164,7 @@ function AnalysisDashboardPage() {
                   </div>
                   <div className="stat-chip">
                     <span className="stat-chip-label">フェーズ</span>
-                    <span className="stat-chip-value">{attackPhase ? '攻撃時' : '基準'}</span>
+                    <span className="stat-chip-value">{formation?.phases ? '攻守分析' : '基準フレーム'}</span>
                   </div>
                   <div className="stat-chip">
                     <span className="stat-chip-label">時間</span>

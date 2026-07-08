@@ -219,7 +219,7 @@ function KickAnalysisPage() {
             <h3 className="card-title">セッション情報</h3>
             <div className="struct-rows">
               <div className="struct-row"><span>フォーメーション</span><strong>{session?.teams?.[0]?.formation ?? '-'}</strong></div>
-              <div className="struct-row"><span>フェーズ</span><strong className="accent-text">{session?.phases ? '攻撃時' : '-'}</strong></div>
+              <div className="struct-row"><span>フェーズ</span><strong className="accent-text">{session?.phases ? '攻守分析済み' : '-'}</strong></div>
               <div className="struct-row"><span>時間</span><strong>{result?.duration ? `${result.duration.toFixed(2)}秒` : '-'}</strong></div>
               <div className="struct-row">
                 <span>信頼度</span>
