@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import RadarChart from '../components/RadarChart'
 import { api } from '../services/api'
+import { loadProfile } from '../services/profile'
 import { GrowthSummary } from '../types'
 
 const TYPE_NAMES: Record<string, string> = {
@@ -35,7 +36,7 @@ function DashboardPage() {
 
   return (
     <div>
-      <h2 className="greeting">こんにちは、コーチ 👋</h2>
+      <h2 className="greeting">こんにちは、{loadProfile().name} 👋</h2>
 
       {summary && (
         <Link to="/analysis" className="drill-banner">

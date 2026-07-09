@@ -1,16 +1,10 @@
 import { NavLink } from 'react-router-dom'
-
-const ITEMS = [
-  { to: '/', icon: '🏠', label: 'ホーム' },
-  { to: '/analysis', icon: '📹', label: 'フォーム解析' },
-  { to: '/formation', icon: '🧭', label: '戦術ボード' },
-  { to: '/growth', icon: '📈', label: '成長記録' }
-]
+import { NAV_ITEMS } from './Header'
 
 function BottomNav() {
   return (
-    <nav className="bottom-nav" aria-label="メインナビゲーション">
-      {ITEMS.map((item) => (
+    <nav className="bottom-nav" aria-label="モバイルナビゲーション">
+      {NAV_ITEMS.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}

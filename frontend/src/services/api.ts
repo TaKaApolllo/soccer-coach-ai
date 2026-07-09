@@ -6,6 +6,7 @@ import {
   FormationResponse,
   GrowthSummary,
   PoseAnalysisResponse,
+  TacticalTrendData,
   TrendData
 } from '../types'
 
@@ -19,12 +20,14 @@ export const api = {
   async analyzePose(
     file: File,
     analysisType: string,
-    context?: string
+    context?: string,
+    faceMode: 'real' | 'avatar' = 'real'
   ): Promise<PoseAnalysisResponse> {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('analysis_type', analysisType)
     if (context) formData.append('context', context)
+    formData.append('face_mode', faceMode)
 
     const response = await axios.post<PoseAnalysisResponse>(
       `${API_BASE}/pose/analyze`,
@@ -41,12 +44,14 @@ export const api = {
   async analyzeFormation(
     file: File,
     teamAName?: string,
-    teamBName?: string
+    teamBName?: string,
+    focusTeam = 0
   ): Promise<FormationResponse> {
     const formData = new FormData()
     formData.append('file', file)
     if (teamAName) formData.append('team_a_name', teamAName)
     if (teamBName) formData.append('team_b_name', teamBName)
+    formData.append('focus_team', String(focusTeam))
 
     const response = await axios.post<FormationResponse>(
       `${API_BASE}/formation/analyze`,
@@ -99,6 +104,18 @@ export const api = {
     return response.data
   },
 
+  /** 指定タイプの最新解析（ペイロード込み）。"pose" で骨格解析系の最新 */
+  async getLatestAnalysis<T = Record<string, unknown>>(
+    analysisType: string
+  ): Promise<{ id: string; created_at: string; analysis: T } | null> {
+    try {
+      const response = await axios.get(`${API_BASE}/history-latest/${analysisType}`)
+      return response.data
+    } catch {
+      return null
+    }
+  },
+
   async deleteAnalysis(id: string): Promise<void> {
     await axios.delete(`${API_BASE}/history/${id}`)
   },
@@ -111,6 +128,14 @@ export const api = {
   async getGrowthTrend(months = 8): Promise<TrendData> {
     const response = await axios.get<TrendData>(
       `${API_BASE}/growth/trend`,
+      { params: { months } }
+    )
+    return response.data
+  },
+
+  async getTacticalTrend(months = 8): Promise<TacticalTrendData> {
+    const response = await axios.get<TacticalTrendData>(
+      `${API_BASE}/growth/tactical-trend`,
       { params: { months } }
     )
     return response.data

@@ -40,11 +40,13 @@ ROLE_BY_LINE = {0: "DF", 1: "MF", 2: "FW", 3: "FW"}
 @dataclass
 class FormationPlayer:
     index: int                      # 検出時のインデックス
-    x: float                        # 0-1 (自陣ゴール→敵陣ゴール)
-    y: float                        # 0-1 (タッチライン間)
+    x: float                        # 0-1 (自陣ゴール→敵陣ゴール、攻撃方向で正規化済み)
+    y: float                        # 0-1 (タッチライン間、攻撃方向で正規化済み)
     role: str = "MF"
     line: int = -1
     is_goalkeeper: bool = False
+    raw_x: float = 0.0              # 0-1 検出時の生ピッチ座標（フリップ前）
+    raw_y: float = 0.0              # ボール・パス候補・オフサイドラインと同じ座標系
     snapped_x: float = 0.0          # テンプレート整形後の配置座標
     snapped_y: float = 0.0
 
@@ -80,21 +82,32 @@ class FormationAnalyzer:
         if len(positions) < 3:
             tf.formation = "判定不可（選手数不足）"
             for (x, y), idx in zip(positions, indices):
-                tf.players.append(FormationPlayer(index=idx, x=x, y=y, snapped_x=x, snapped_y=y))
+                tf.players.append(
+                    FormationPlayer(index=idx, x=x, y=y, raw_x=x, raw_y=y, snapped_x=x, snapped_y=y)
+                )
             return tf
 
         pts = np.array(positions, dtype=np.float64)
+        raw_pts = pts.copy()  # 生の検出座標（フリップ前）。ルーターの detected_x/y に使う
 
         # 攻撃方向の推定: 選手の重心が左寄りなら左→右に攻めるとみなす
         if attack_left_to_right is None:
             attack_left_to_right = pts[:, 0].mean() <= 0.5
         if not attack_left_to_right:
+            # フリップは内部のライン分割・整形配置（snapped_x/y）計算専用。
+            # raw_x/raw_y は生座標のまま保持し、検出位置ビューの破壊的反転を防ぐ。
             pts[:, 0] = 1.0 - pts[:, 0]
             pts[:, 1] = 1.0 - pts[:, 1]
 
         players = [
-            FormationPlayer(index=idx, x=float(p[0]), y=float(p[1]))
-            for p, idx in zip(pts, indices)
+            FormationPlayer(
+                index=idx,
+                x=float(p[0]),
+                y=float(p[1]),
+                raw_x=float(rp[0]),
+                raw_y=float(rp[1]),
+            )
+            for p, rp, idx in zip(pts, raw_pts, indices)
         ]
 
         # GK: 色ヒントがあれば優先、なければ最後方（x 最小）の選手。
@@ -255,8 +268,22 @@ class FormationAnalyzer:
             group_sorted = sorted(group, key=lambda p: p.y)
             k = len(group_sorted)
             ys = np.linspace(0.5, 0.5, 1) if k == 1 else np.linspace(0.12, 0.88, k)
-            for pl, y in zip(group_sorted, ys):
-                pl.role = role
+            for pos_in_line, (pl, y) in enumerate(zip(group_sorted, ys)):
+                pl.role = self._detailed_role(role, pos_in_line, k)
                 pl.line = li
                 pl.snapped_x = float(depths[li])
                 pl.snapped_y = float(y)
+
+    @staticmethod
+    def _detailed_role(base_role: str, pos_in_line: int, line_size: int) -> str:
+        """ライン内の位置（タッチライン側か中央か）から詳細ロールを推定"""
+        if base_role not in ("DF", "MF", "FW") or line_size <= 1:
+            return {"DF": "CB", "MF": "CM", "FW": "CF"}.get(base_role, base_role)
+
+        is_wide = pos_in_line == 0 or pos_in_line == line_size - 1
+        if base_role == "DF":
+            return "SB" if (is_wide and line_size >= 4) else "CB"
+        if base_role == "MF":
+            return "SH" if (is_wide and line_size >= 4) else "CM"
+        # FW
+        return "WG" if (is_wide and line_size >= 3) else "CF"

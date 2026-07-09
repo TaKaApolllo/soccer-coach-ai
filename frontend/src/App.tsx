@@ -1,10 +1,13 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import Header from './components/Header'
 import BottomNav from './components/BottomNav'
 import DashboardPage from './pages/DashboardPage'
-import AnalysisPage from './pages/AnalysisPage'
-import FormationPage from './pages/FormationPage'
+import AnalysisDashboardPage from './pages/AnalysisDashboardPage'
+import KickAnalysisPage from './pages/KickAnalysisPage'
+import FormAnalysisPage from './pages/FormAnalysisPage'
 import GrowthPage from './pages/GrowthPage'
+import DrillsPage from './pages/DrillsPage'
+import SettingsPage from './pages/SettingsPage'
 
 function App() {
   return (
@@ -13,9 +16,13 @@ function App() {
       <main className="main-content">
         <Routes>
           <Route path="/" element={<DashboardPage />} />
-          <Route path="/analysis" element={<AnalysisPage />} />
-          <Route path="/formation" element={<FormationPage />} />
+          <Route path="/analysis" element={<AnalysisDashboardPage />} />
+          <Route path="/kick" element={<KickAnalysisPage />} />
+          <Route path="/form-analysis" element={<FormAnalysisPage />} />
+          <Route path="/formation" element={<Navigate to="/analysis" replace />} />
           <Route path="/growth" element={<GrowthPage />} />
+          <Route path="/drills" element={<DrillsPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
       <BottomNav />

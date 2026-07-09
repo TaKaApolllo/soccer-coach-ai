@@ -26,33 +26,36 @@ ai_analyzer = AIAnalyzer()
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 
 
-def _load_frames(file_path: str, max_frames: int = 8):
-    """アップロードファイルから解析用フレーム (BGR) を取り出す"""
+def _load_frames(file_path: str, max_frames: int = 10):
+    """アップロードファイルから解析用フレーム (BGR) とインデックス・fps を取り出す"""
     if video_processor.is_video(file_path):
         cap = cv2.VideoCapture(file_path)
         if not cap.isOpened():
             raise ValueError("動画ファイルを開けません")
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         indices = (
             list(range(total))
             if total <= max_frames
             else [int(i * total / max_frames) for i in range(max_frames)]
         )
         frames = []
+        kept_indices = []
         for idx in indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ok, frame = cap.read()
             if ok:
                 frames.append(frame)
+                kept_indices.append(idx)
         cap.release()
         if not frames:
             raise ValueError("動画からフレームを取得できませんでした")
-        return frames
+        return frames, kept_indices, fps
 
     img = cv2.imread(file_path)
     if img is None:
         raise ValueError("画像ファイルを開けません")
-    return [img]
+    return [img], [0], 0.0
 
 
 @router.post("/pose/analyze")
@@ -60,13 +63,17 @@ async def analyze_pose(
     file: UploadFile = File(...),
     analysis_type: str = Form(default="kick"),
     context: Optional[str] = Form(default=None),
+    face_mode: str = Form(default="real"),
 ):
     """骨格推定によるフォーム解析
 
     - **file**: 動画または画像
     - **analysis_type**: kick / pass / dribble など
     - **context**: 追加のコンテキスト情報
+    - **face_mode**: real（実写のまま）/ avatar（アニメ風アバターで顔を隠す）
     """
+    if face_mode not in ("real", "avatar"):
+        face_mode = "real"
     filename = file.filename or "upload"
     file_ext = os.path.splitext(filename)[1].lower()
     allowed = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.jpg', '.jpeg', '.png', '.bmp', '.webp'}
@@ -83,7 +90,7 @@ async def analyze_pose(
         raise HTTPException(status_code=500, detail=f"ファイルの保存に失敗しました: {e}")
 
     try:
-        frames = _load_frames(file_path)
+        frames, frame_indices, fps = _load_frames(file_path)
     except ValueError as e:
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -93,7 +100,7 @@ async def analyze_pose(
     pose_result = None
     pose_error = None
     try:
-        pose_result = pose_estimator.analyze_frames(frames)
+        pose_result = pose_estimator.analyze_frames(frames, face_mode=face_mode)
     except PoseUnavailableError as e:
         pose_error = str(e)
     except Exception as e:
@@ -114,10 +121,47 @@ async def analyze_pose(
 
     score = pose_result.get("score") if pose_detected else ai_feedback.get("score")
 
+    # HUD 表示用の計測値: ボール初速（動画のみ・概算）と蹴り足の膝角度レンジ
+    ball_speed = None
+    kick_angle_range = None
+    if pose_detected:
+        if fps > 0:
+            try:
+                ball_speed = pose_estimator.estimate_ball_speed(
+                    frames, frame_indices, fps, pose_result["frames"]
+                )
+            except Exception:
+                ball_speed = None
+        # 自分の過去解析の平均初速との差分
+        if ball_speed is not None:
+            past_speeds = []
+            for item in db.list_analyses(limit=20, include_payload=True):
+                bs = item.get("analysis", {}).get("ball_speed")
+                if bs and bs.get("speed_kmh"):
+                    past_speeds.append(bs["speed_kmh"])
+            if past_speeds:
+                avg = sum(past_speeds) / len(past_speeds)
+                ball_speed["delta_vs_avg"] = round(ball_speed["speed_kmh"] - avg)
+        knee_angles = [
+            min(a for a in (f["angles"].get("left_knee"), f["angles"].get("right_knee")) if a is not None)
+            for f in pose_result["frames"]
+            if f["angles"].get("left_knee") is not None or f["angles"].get("right_knee") is not None
+        ]
+        if knee_angles:
+            kick_angle_range = {"min": round(min(knee_angles)), "max": round(max(knee_angles))}
+
+    # スクラバー用のフレーム時刻（秒）と総再生時間
+    frame_times = [round(idx / fps, 2) for idx in frame_indices] if fps > 0 else None
+    duration = round(frame_indices[-1] / fps, 2) if fps > 0 and frame_indices else None
+
     payload = {
         "pose": pose_result,
         "pose_error": pose_error,
         "ai_feedback": ai_feedback,
+        "ball_speed": ball_speed,
+        "kick_angle_range": kick_angle_range,
+        "frame_times": frame_times,
+        "duration": duration,
         "context": context,
     }
 
@@ -132,5 +176,9 @@ async def analyze_pose(
         "score": score,
         "pose": pose_result,
         "pose_error": pose_error,
+        "ball_speed": ball_speed,
+        "kick_angle_range": kick_angle_range,
+        "frame_times": frame_times,
+        "duration": duration,
         "ai_feedback": ai_feedback,
     }

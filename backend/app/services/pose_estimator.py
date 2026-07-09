@@ -107,7 +107,7 @@ class PoseEstimator:
     # 公開 API
     # ------------------------------------------------------------------
 
-    def analyze_frames(self, frames_bgr: List[np.ndarray]) -> dict:
+    def analyze_frames(self, frames_bgr: List[np.ndarray], face_mode: str = "real") -> dict:
         """複数フレームを解析し、キーポイント・角度・スコア・注釈画像を返す
 
         Returns:
@@ -127,12 +127,15 @@ class PoseEstimator:
             )
 
         poses: List[FramePose] = []
-        annotated: List[str] = []
+        annotated: List[str] = []   # 角度ビュー（AR注釈付き）
+        clean: List[str] = []       # フォームビュー（元映像）
+        skeleton_only: List[str] = []  # 骨格ビュー（暗背景にスケルトンのみ）
 
         with mp.solutions.pose.Pose(
             static_image_mode=True,
             model_complexity=self._model_complexity,
             min_detection_confidence=0.4,
+            enable_segmentation=True,
         ) as pose_model:
             for i, frame in enumerate(frames_bgr):
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -151,18 +154,60 @@ class PoseEstimator:
                             "y": round(lm.y, 4),
                             "visibility": round(lm.visibility, 3),
                         })
+                    # 顔のサイズ・向き推定用に両耳も取得（描画対象には含めない）
+                    for ear_idx in (7, 8):
+                        lm = result.pose_landmarks.landmark[ear_idx]
+                        if lm.visibility > 0.3:
+                            pts[ear_idx] = (lm.x * w, lm.y * h)
+
                     fp.angles = self._compute_angles(pts)
-                    frame_out = self._draw_skeleton(frame.copy(), pts, fp.angles)
+                    seg_mask = getattr(result, "segmentation_mask", None)
+                    use_avatar_face = face_mode == "avatar"
+
+                    # フォームビュー: 元映像（アバター顔モードでは顔を覆う）
+                    clean_frame = frame.copy()
+                    if use_avatar_face:
+                        self._draw_avatar_face(clean_frame, pts)
+
+                    # 角度ビュー: 背景を落として人物を際立たせてから AR 注釈
+                    focused = self._focus_person(frame.copy(), seg_mask)
+                    frame_out = self._draw_skeleton(focused, pts, fp.angles)
+                    if use_avatar_face:
+                        self._draw_avatar_face(frame_out, pts)
+
+                    # 骨格（アバター）ビュー: 人物の切り抜き or ボリュームマネキン
+                    skeleton_frame = self._draw_avatar_view(frame, seg_mask, pts, fp.angles)
+                    if use_avatar_face:
+                        self._draw_avatar_face(skeleton_frame, pts)
                 else:
+                    clean_frame = frame
                     frame_out = frame
+                    skeleton_frame = None
 
                 poses.append(fp)
+                clean.append(self._to_base64(clean_frame))
                 annotated.append(self._to_base64(frame_out))
+                skeleton_only.append(
+                    self._to_base64(skeleton_frame) if skeleton_frame is not None else None
+                )
 
         self._assign_phases(poses)
         key_idx = self._pick_key_frame(poses)
         metrics = self._kick_metrics(poses, key_idx)
         score, breakdown = self._score(metrics)
+        key_angles = self._key_angles(poses, key_idx, metrics)
+
+        # 部位別スコア用にキーフレームのボール位置を検出（正規化画像座標へ）
+        ball_center_norm = None
+        if frames_bgr and 0 <= key_idx < len(frames_bgr):
+            kf = frames_bgr[key_idx]
+            kh, kw = kf.shape[:2]
+            ball_px = self._find_ball_center(kf)
+            if ball_px is not None and kw > 0 and kh > 0:
+                ball_center_norm = (ball_px[0] / kw, ball_px[1] / kh)
+        body_parts = self._analyze_body_parts(
+            poses, key_idx, metrics, key_angles, ball_center_norm
+        )
 
         return {
             "frames": [
@@ -175,12 +220,203 @@ class PoseEstimator:
                 for p in poses
             ],
             "annotated_images": annotated,
+            "clean_images": clean,
+            "skeleton_images": skeleton_only,
             "key_frame_index": key_idx,
             "metrics": metrics,
             "score": score,
+            "score_message": self._score_message(score, breakdown),
             "score_breakdown": breakdown,
             "phases": [p.phase for p in poses],
+            "key_angles": key_angles,
+            "timeline": self._motion_timeline(poses),
+            "sub_scores": self._sub_scores(poses, metrics, breakdown),
+            "body_part_scores": body_parts["body_part_scores"],
+            "improvement_rankings": body_parts["improvement_rankings"],
+            "center_of_gravity": body_parts["center_of_gravity"],
         }
+
+    # ------------------------------------------------------------------
+    # 主要角度一覧（理想値付き・理想フォーム比較にも使用）
+    # ------------------------------------------------------------------
+
+    def _key_angles(self, poses: List[FramePose], key_idx: int, metrics: dict) -> List[dict]:
+        if not poses:
+            return []
+        key = poses[min(key_idx, len(poses) - 1)]
+        last = poses[-1]
+
+        def kicking_side_angle(frame_pose: FramePose, joint: str) -> Optional[float]:
+            """蹴り足（膝屈曲が大きい側）の関節角度"""
+            lk = frame_pose.angles.get("left_knee")
+            rk = frame_pose.angles.get("right_knee")
+            if lk is None and rk is None:
+                return None
+            side = "left" if (rk is None or (lk is not None and lk < rk)) else "right"
+            return frame_pose.angles.get(f"{side}_{joint}")
+
+        entries = [
+            ("torso_lean", "上半身の傾き", "LEAN",
+             key.angles.get("torso_lean"), 10, "理想 5〜25°"),
+            ("pelvis_tilt", "骨盤の傾き", "PELVIS",
+             key.angles.get("pelvis_tilt"), 8, "理想 前傾"),
+            ("support_leg", "支持脚の角度", "SUPPORT LEG",
+             metrics.get("plant_leg_knee_angle"), 165, "理想 165°"),
+            ("backswing", "蹴り脚の振り上げ", "BACKSWING",
+             metrics.get("backswing_knee_angle"), 95, "理想 95°"),
+            ("knee_impact", "膝の角度（インパクト時）", "KNEE",
+             metrics.get("kicking_leg_knee_angle"), 130, "理想 130°"),
+            ("ankle_impact", "足首の角度（インパクト時）", "ANKLE",
+             kicking_side_angle(key, "ankle"), 140, "理想 140°"),
+            ("follow_through", "フォロースルー角度", "FOLLOW THROUGH",
+             kicking_side_angle(last, "hip"), 130, "理想 130°"),
+        ]
+
+        result = []
+        for keyname, label, label_en, value, ideal, ideal_text in entries:
+            if value is None:
+                continue
+            result.append({
+                "key": keyname,
+                "label": label,
+                "label_en": label_en,
+                "value": round(float(value), 1),
+                "ideal": ideal,
+                "ideal_text": ideal_text,
+            })
+        return result
+
+    # ------------------------------------------------------------------
+    # モーションタイムライン（フレーム間の動作強度）
+    # ------------------------------------------------------------------
+
+    def _motion_timeline(self, poses: List[FramePose]) -> List[dict]:
+        """関節の移動量から各フレームの動作強度 (0-100) を算出"""
+        if len(poses) < 2:
+            return [
+                {"frame_index": p.frame_index, "phase": p.phase, "intensity": 0}
+                for p in poses
+            ]
+
+        def lm_map(p: FramePose) -> dict:
+            return {lm["name"]: (lm["x"], lm["y"]) for lm in p.landmarks}
+
+        track = ["left_knee", "right_knee", "left_ankle", "right_ankle",
+                 "left_hip", "right_hip", "left_wrist", "right_wrist"]
+        raw = [0.0]
+        for prev, cur in zip(poses, poses[1:]):
+            pm, cm = lm_map(prev), lm_map(cur)
+            ds = [
+                math.hypot(cm[k][0] - pm[k][0], cm[k][1] - pm[k][1])
+                for k in track if k in pm and k in cm
+            ]
+            raw.append(float(np.mean(ds)) if ds else 0.0)
+
+        peak = max(raw) or 1.0
+        return [
+            {
+                "frame_index": p.frame_index,
+                "phase": p.phase,
+                "intensity": int(round(v / peak * 100)),
+            }
+            for p, v in zip(poses, raw)
+        ]
+
+    # ------------------------------------------------------------------
+    # サブスコア（インパクト・安定性・効率・ケガのリスク）
+    # ------------------------------------------------------------------
+
+    def _sub_scores(self, poses: List[FramePose], metrics: dict, breakdown: List[dict]) -> dict:
+        detected = [p for p in poses if p.landmarks]
+        if not detected:
+            return {}
+
+        def kicking_knee(p: FramePose) -> Optional[float]:
+            vals = [v for v in (p.angles.get("left_knee"), p.angles.get("right_knee")) if v is not None]
+            return min(vals) if vals else None
+
+        # 蹴り足サイドを一度だけ決定する（`_kicking_side` に共通化）。
+        kicking_side = self._kicking_side(poses)
+
+        # インパクトの強さ: バックスイング→インパクトの膝伸展速度（蹴り足の系列のみ使用）
+        ext_speed = 0.0
+        if kicking_side is not None:
+            knee_series = [p.angles.get(f"{kicking_side}_knee") for p in poses]
+            for a, b in zip(knee_series, knee_series[1:]):
+                if a is not None and b is not None:
+                    ext_speed = max(ext_speed, b - a)  # 伸展方向（角度が増える）の最大変化
+        impact = int(np.clip(ext_speed / 55.0 * 100, 5, 100))
+
+        # フォームの安定性: 体幹の傾きと軸足膝角のばらつき
+        leans = [p.angles["torso_lean"] for p in detected if "torso_lean" in p.angles]
+        plant = [max(v for v in (p.angles.get("left_knee"), p.angles.get("right_knee")) if v is not None)
+                 for p in detected if kicking_knee(p) is not None]
+        stability = 100.0
+        if len(leans) >= 2:
+            stability -= float(np.std(leans)) * 3.5
+        if len(plant) >= 2:
+            stability -= float(np.std(plant)) * 1.2
+        stability = int(np.clip(stability, 10, 100))
+
+        # パワー効率: バックスイングの深さと腕バランスの複合（breakdown を再利用）
+        eff_items = [b["score"] for b in breakdown if b["key"] in ("backswing_knee_angle", "arm_extension")]
+        efficiency = int(np.clip(np.mean(eff_items) if eff_items else 50, 5, 100))
+
+        # ケガのリスク: 危険な姿勢フラグの数で判定
+        flags = []
+        plant_angle = metrics.get("plant_leg_knee_angle")
+        if plant_angle is not None and plant_angle > 178:
+            flags.append("軸足の膝が伸びきっており、着地の衝撃が膝に直接伝わります")
+        if plant_angle is not None and plant_angle < 120:
+            flags.append("軸足が深く沈み込みすぎており、膝への負担が大きい姿勢です")
+        lean_val = metrics.get("torso_lean_at_impact")
+        if lean_val is not None and lean_val > 35:
+            flags.append("上体の傾きが大きく、腰への負担が心配です")
+
+        risk_level = "低" if not flags else ("中" if len(flags) == 1 else "高")
+        risk_comment = "安全なフォームです。継続して良いです" if not flags else flags[0]
+
+        def label_for(v: int, kind: str) -> str:
+            table = {
+                "impact": [(85, "非常に強い"), (65, "強い"), (45, "標準的"), (0, "伸びしろあり")],
+                "stability": [(85, "安定している"), (65, "概ね安定"), (45, "ややばらつき"), (0, "ばらつき大")],
+                "efficiency": [(85, "効率的"), (65, "良好"), (45, "標準的"), (0, "改善余地あり")],
+            }[kind]
+            return next(lbl for th, lbl in table if v >= th)
+
+        return {
+            "impact_strength": {"score": impact, "label": label_for(impact, "impact"),
+                                "detail": "理想に近いインパクト" if impact >= 80 else "膝の振り抜き速度から算出"},
+            "stability": {"score": stability, "label": label_for(stability, "stability"),
+                          "detail": "一貫性のあるフォーム" if stability >= 80 else "フレーム間のフォームのばらつき"},
+            "power_efficiency": {"score": efficiency, "label": label_for(efficiency, "efficiency"),
+                                 "detail": "エネルギーの使い方が良い" if efficiency >= 80 else "バックスイングと腕の使い方から算出"},
+            "injury_risk": {"level": risk_level, "comment": risk_comment, "flags": flags},
+        }
+
+    @staticmethod
+    def _score_message(score: int, breakdown: List[dict]) -> dict:
+        """スコアリング直下に表示する一言メッセージ"""
+        if score >= 85:
+            headline = "素晴らしい角度です！"
+        elif score >= 70:
+            headline = "良いフォームです！"
+        elif score >= 50:
+            headline = "改善の余地があります"
+        else:
+            headline = "基礎から確認しましょう"
+
+        detail = ""
+        if breakdown:
+            best = max(breakdown, key=lambda b: b["score"])
+            worst = min(breakdown, key=lambda b: b["score"])
+            if best["score"] >= 80 and worst["score"] >= 80:
+                detail = f"{best['label']}が特に優れており、強いシュートが期待できます。"
+            elif best["score"] >= 80:
+                detail = f"{best['label']}は良好です。{worst['label']}を意識するとさらに伸びます。"
+            else:
+                detail = f"まずは{worst['label']}から改善しましょう。"
+        return {"headline": headline, "detail": detail}
 
     # ------------------------------------------------------------------
     # 角度計算
@@ -215,6 +451,13 @@ class PoseEstimator:
             lean = _lean_from_vertical(shoulder_mid, hip_mid)
             if lean is not None:
                 angles["torso_lean"] = round(lean, 1)
+
+        # 骨盤の傾き（左右股関節を結ぶ線の水平からの傾き）
+        if get(23) and get(24):
+            dx = pts[24][0] - pts[23][0]
+            dy = pts[24][1] - pts[23][1]
+            if abs(dx) > 1e-6:
+                angles["pelvis_tilt"] = round(abs(math.degrees(math.atan2(dy, dx))), 1)
 
         return angles
 
@@ -303,16 +546,40 @@ class PoseEstimator:
 
         return metrics
 
+    @staticmethod
+    def _band_score(value, lo, hi, tolerance) -> Optional[float]:
+        """理想レンジ [lo, hi] 内なら満点(1.0)、外れるほど減点。値が None なら None"""
+        if value is None:
+            return None
+        if lo <= value <= hi:
+            return 1.0
+        dist = (lo - value) if value < lo else (value - hi)
+        return max(0.0, 1.0 - dist / tolerance)
+
+    @staticmethod
+    def _kicking_side(poses: List["FramePose"]) -> Optional[str]:
+        """蹴り足サイドを一意に決定する。
+
+        フレームごとに min(left, right) を蹴り足とみなすとフレーム間で担当脚が
+        入れ替わりうるため、全フレーム中で膝角度が最小になった側（＝バックスイングが
+        最も深い側）に固定する。`_sub_scores` と共通のロジック。
+        """
+        kicking_side = None
+        best_angle = None
+        for p in poses:
+            for side in ("left", "right"):
+                v = p.angles.get(f"{side}_knee")
+                if v is not None and (best_angle is None or v < best_angle):
+                    best_angle = v
+                    kicking_side = side
+        return kicking_side
+
     def _score(self, metrics: dict) -> Tuple[int, List[dict]]:
         """指標を理想レンジと比較してスコア化"""
         breakdown = []
 
         def band_score(value, lo, hi, tolerance):
-            """理想レンジ [lo, hi] 内なら満点、外れるほど減点"""
-            if lo <= value <= hi:
-                return 1.0
-            dist = (lo - value) if value < lo else (value - hi)
-            return max(0.0, 1.0 - dist / tolerance)
+            return self._band_score(value, lo, hi, tolerance)
 
         checks = [
             ("backswing_knee_angle", "バックスイングの深さ", 60, 110, 50,
@@ -351,58 +618,815 @@ class PoseEstimator:
         return max(0, min(100, score)), breakdown
 
     # ------------------------------------------------------------------
+    # 部位別スコアリングエンジン（軸足・蹴り足・上半身・バランス）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _lm_map(p: "FramePose") -> dict:
+        """FramePose のランドマークを {name: (x, y)}（正規化画像座標）に展開"""
+        return {lm["name"]: (lm["x"], lm["y"]) for lm in p.landmarks}
+
+    @staticmethod
+    def _status_for(score: int) -> str:
+        return "good" if score >= 75 else ("warn" if score >= 50 else "bad")
+
+    def _person_height_norm(self, poses: List["FramePose"]) -> Optional[float]:
+        """骨格の身長を正規化画像高さ（0-1）で近似（鼻〜足首 ≈ 身長の 88%）"""
+        heights = []
+        for p in poses:
+            lms = self._lm_map(p)
+            ankle = lms.get("left_ankle") or lms.get("right_ankle")
+            if "nose" in lms and ankle is not None:
+                h = abs(ankle[1] - lms["nose"][1]) / 0.88
+                if h > 0.05:
+                    heights.append(h)
+        return float(np.median(heights)) if heights else None
+
+    def _kick_direction(
+        self,
+        poses: List["FramePose"],
+        key_idx: int,
+        ball_center_norm: Optional[Tuple[float, float]],
+        kicking_side: Optional[str],
+    ) -> Optional[float]:
+        """蹴り方向（x 軸の符号: +1=右向き / -1=左向き）を推定。判定不能なら None
+
+        優先順位: ボール方向 → 蹴り足つま先のフレーム間移動 → 判定不能
+        """
+        if not poses:
+            return None
+        key = poses[min(key_idx, len(poses) - 1)]
+        lms = self._lm_map(key)
+
+        # 体の中心 x（腰の中点、なければ肩の中点）
+        body_x = None
+        if "left_hip" in lms and "right_hip" in lms:
+            body_x = (lms["left_hip"][0] + lms["right_hip"][0]) / 2
+        elif "left_shoulder" in lms and "right_shoulder" in lms:
+            body_x = (lms["left_shoulder"][0] + lms["right_shoulder"][0]) / 2
+
+        # 1) ボールの方向（体の中心から見てボールがある側）
+        if ball_center_norm is not None and body_x is not None:
+            if abs(ball_center_norm[0] - body_x) > 1e-3:
+                return 1.0 if ball_center_norm[0] >= body_x else -1.0
+
+        # 2) 蹴り足つま先のフレーム間移動方向
+        if kicking_side is not None:
+            toe = f"{kicking_side}_foot_index"
+            xs = [self._lm_map(p)[toe][0] for p in poses if toe in self._lm_map(p)]
+            if len(xs) >= 2:
+                dx = xs[-1] - xs[0]
+                if abs(dx) > 1e-3:
+                    return 1.0 if dx > 0 else -1.0
+
+        return None
+
+    def _center_of_gravity(
+        self,
+        poses: List["FramePose"],
+        key_idx: int,
+        plant_side: Optional[str],
+        height_norm: Optional[float],
+    ) -> dict:
+        """主要ランドマークの重み付き平均で重心を近似し、軸足への乗りを判定"""
+        key = poses[min(key_idx, len(poses) - 1)]
+        lms = self._lm_map(key)
+
+        def midpoint(a: str, b: str):
+            if a in lms and b in lms:
+                return ((lms[a][0] + lms[b][0]) / 2, (lms[a][1] + lms[b][1]) / 2)
+            return None
+
+        parts = [
+            (midpoint("left_hip", "right_hip"), 0.4),
+            (midpoint("left_shoulder", "right_shoulder"), 0.3),
+            (midpoint("left_knee", "right_knee"), 0.2),
+            (midpoint("left_ankle", "right_ankle"), 0.1),
+        ]
+        avail = [(pt, w) for pt, w in parts if pt is not None]
+        if not avail:
+            return {"x": None, "y": None, "over_plant_foot": False,
+                    "comment": "重心を計測できませんでした"}
+
+        wsum = sum(w for _, w in avail)
+        cog_x = sum(pt[0] * w for pt, w in avail) / wsum
+        cog_y = sum(pt[1] * w for pt, w in avail) / wsum
+
+        over = False
+        plant_ankle = lms.get(f"{plant_side}_ankle") if plant_side else None
+        if plant_ankle is not None:
+            threshold = 0.12 * height_norm if height_norm else 0.06
+            over = abs(cog_x - plant_ankle[0]) <= threshold
+
+        if plant_ankle is None:
+            comment = "軸足の位置が取得できず、重心の評価をスキップしました"
+        elif over:
+            comment = "重心が軸足の真上に乗っており、安定したフォームです"
+        else:
+            comment = "重心が軸足に乗っていません。軸足の真上に体重を乗せて踏み込みましょう"
+
+        return {
+            "x": round(cog_x, 4),
+            "y": round(cog_y, 4),
+            "over_plant_foot": bool(over),
+            "comment": comment,
+        }
+
+    def _analyze_body_parts(
+        self,
+        poses: List["FramePose"],
+        key_idx: int,
+        metrics: dict,
+        key_angles: List[dict],
+        ball_center_norm: Optional[Tuple[float, float]],
+    ) -> dict:
+        """部位別スコア・改善ランキング・重心を算出して返す
+
+        Returns: {"body_part_scores": {...}, "improvement_rankings": [...],
+                  "center_of_gravity": {...}}
+        """
+        empty = {
+            "body_part_scores": {},
+            "improvement_rankings": [],
+            "center_of_gravity": {"x": None, "y": None,
+                                  "over_plant_foot": False, "comment": "解析できませんでした"},
+        }
+        detected = [p for p in poses if p.landmarks]
+        if not detected:
+            return empty
+
+        kicking_side = self._kicking_side(poses)
+        plant_side = None
+        if kicking_side is not None:
+            plant_side = "right" if kicking_side == "left" else "left"
+
+        height_norm = self._person_height_norm(poses)
+        kick_dir = self._kick_direction(poses, key_idx, ball_center_norm, kicking_side)
+        cog = self._center_of_gravity(poses, key_idx, plant_side, height_norm)
+
+        key = poses[min(key_idx, len(poses) - 1)]
+        lms = self._lm_map(key)
+
+        def part_from_components(components: List[float]) -> int:
+            vals = [c for c in components if c is not None]
+            if not vals:
+                return 0
+            return int(round(float(np.mean(vals)) * 100))
+
+        # ---------------- 軸足 (plant_leg) ----------------
+        plant_knee = metrics.get("plant_leg_knee_angle")
+        plant_knee_band = self._band_score(plant_knee, 140, 175, 40)
+        plant_components = [plant_knee_band]
+        plant_comments: List[str] = []
+        ball_ratio = None
+        ball_too_far = False
+        if (ball_center_norm is not None and plant_side is not None
+                and height_norm and f"{plant_side}_ankle" in lms):
+            plant_ankle = lms[f"{plant_side}_ankle"]
+            ball_ratio = abs(ball_center_norm[0] - plant_ankle[0]) / height_norm
+            plant_components.append(self._band_score(ball_ratio, 0.15, 0.35, 0.20))
+            ball_too_far = ball_ratio > 0.35
+        plant_score = part_from_components(plant_components)
+        if ball_too_far:
+            plant_comments.append(
+                "軸足がボールから遠すぎます。ボールの真横、こぶし1〜2個分の位置に踏み込みましょう"
+            )
+        if plant_knee is not None and plant_knee > 178:
+            plant_comments.append("軸足の膝が伸びきっています。軽く曲げて衝撃を吸収しましょう")
+        if plant_score >= 75 and not plant_comments:
+            plant_comments.append("軸足の位置と膝のクッションが理想的です")
+        if not plant_comments:
+            plant_comments.append("軸足の膝の角度を理想レンジ(140〜175°)に近づけましょう")
+
+        # ---------------- 蹴り足 (kicking_leg) ----------------
+        backswing = metrics.get("backswing_knee_angle")
+        knee_impact = metrics.get("kicking_leg_knee_angle")
+        kick_components = [
+            self._band_score(backswing, 60, 110, 50),
+            self._band_score(knee_impact, 110, 150, 40),
+        ]
+        kick_score = part_from_components(kick_components)
+        kick_comments: List[str] = []
+        if backswing is not None and backswing > 120:
+            kick_comments.append(
+                "蹴り足の膝の振りが小さいため、ボールに力が伝わりにくいです。"
+                "かかとをお尻に近づけるように深く畳みましょう"
+            )
+        if knee_impact is not None and knee_impact < 110:
+            kick_comments.append("インパクトで膝が曲がりすぎています。しっかり振り抜きましょう")
+        if kick_score >= 75 and not kick_comments:
+            kick_comments.append("蹴り足のバックスイングとインパクトの角度が理想的です")
+        if not kick_comments:
+            kick_comments.append("バックスイングを深く、インパクトで膝を伸ばし切る意識を持ちましょう")
+
+        # ---------------- 上半身 (upper_body) ----------------
+        lean = metrics.get("torso_lean_at_impact", key.angles.get("torso_lean"))
+        pelvis = key.angles.get("pelvis_tilt")
+        upper_components = [
+            self._band_score(lean, 5, 25, 30),
+            self._band_score(pelvis, 3, 15, 15),
+        ]
+        # 符号付きの前後傾: 肩中点が腰中点に対し蹴り方向と逆側にあれば「後傾」
+        backward_lean = False
+        if (kick_dir is not None and "left_shoulder" in lms and "right_shoulder" in lms
+                and "left_hip" in lms and "right_hip" in lms):
+            shoulder_x = (lms["left_shoulder"][0] + lms["right_shoulder"][0]) / 2
+            hip_x = (lms["left_hip"][0] + lms["right_hip"][0]) / 2
+            # 蹴り方向に肩が出ていれば前傾(正)、逆側なら後傾(負)
+            lean_sign = (shoulder_x - hip_x) * kick_dir
+            if lean_sign < -0.01:
+                backward_lean = True
+        if backward_lean:
+            upper_components.append(0.2)  # 後傾は重大な欠点としてスコアを押し下げる
+        upper_score = part_from_components(upper_components)
+        upper_comments: List[str] = []
+        if backward_lean:
+            upper_comments.append(
+                "上半身が後ろに倒れているため、シュートが浮きやすくなります。"
+                "胸をボールにかぶせる意識を持ちましょう"
+            )
+        if lean is not None and lean > 25 and not backward_lean:
+            upper_comments.append("上体が前に倒れすぎています。目線を上げてバランスを保ちましょう")
+        if upper_score >= 75 and not upper_comments:
+            upper_comments.append("上半身の前傾と骨盤の使い方が安定しています")
+        if not upper_comments:
+            upper_comments.append("上体を適度に前傾させ、ボールに覆いかぶさる意識を持ちましょう")
+
+        # ---------------- バランス (balance) ----------------
+        arm = metrics.get("arm_extension")
+        arm_band = self._band_score(arm, 90, 170, 60)
+        cog_component = 1.0 if cog.get("over_plant_foot") else 0.35
+        balance_components = [arm_band, cog_component]
+        balance_score = part_from_components(balance_components)
+        balance_comments: List[str] = []
+        if not cog.get("over_plant_foot") and cog.get("x") is not None:
+            balance_comments.append(
+                "重心が軸足に乗っていません。軸足の真上に体重を乗せてから蹴りましょう"
+            )
+        if arm is not None and arm < 90:
+            balance_comments.append("腕をもっと開いて、上半身のバランスを取りましょう")
+        if balance_score >= 75 and not balance_comments:
+            balance_comments.append("腕でバランスを取り、重心が軸足にしっかり乗っています")
+        if not balance_comments:
+            balance_comments.append("腕を広げて重心を軸足に乗せ、安定して蹴りましょう")
+
+        body_part_scores = {
+            "plant_leg": {
+                "label": "軸足", "score": plant_score,
+                "status": self._status_for(plant_score),
+                "comments": plant_comments,
+                "angles": {"knee": round(float(plant_knee), 1) if plant_knee is not None else None},
+            },
+            "kicking_leg": {
+                "label": "蹴り足", "score": kick_score,
+                "status": self._status_for(kick_score),
+                "comments": kick_comments,
+                "angles": {
+                    "backswing": round(float(backswing), 1) if backswing is not None else None,
+                    "knee_impact": round(float(knee_impact), 1) if knee_impact is not None else None,
+                },
+            },
+            "upper_body": {
+                "label": "上半身", "score": upper_score,
+                "status": self._status_for(upper_score),
+                "comments": upper_comments,
+                "angles": {
+                    "lean": round(float(lean), 1) if lean is not None else None,
+                    "pelvis": round(float(pelvis), 1) if pelvis is not None else None,
+                },
+            },
+            "balance": {
+                "label": "バランス", "score": balance_score,
+                "status": self._status_for(balance_score),
+                "comments": balance_comments,
+                "angles": {"arm": round(float(arm), 1) if arm is not None else None},
+            },
+        }
+
+        rankings = self._improvement_rankings(key_angles, body_part_scores)
+
+        return {
+            "body_part_scores": body_part_scores,
+            "improvement_rankings": rankings,
+            "center_of_gravity": cog,
+        }
+
+    # key_angles の key と部位のひも付け（改善ランキング用）
+    # {key: (part, label, ideal_lo, ideal_hi, issue, advice)}
+    _RANKING_META = {
+        "torso_lean": ("upper_body", "上半身", 5, 25, "体幹の傾きが理想から外れています",
+                       "上体を適度に前傾させ、ボールに覆いかぶさる意識を持ちましょう"),
+        "pelvis_tilt": ("upper_body", "上半身", 3, 15, "骨盤の傾きが理想から外れています",
+                        "骨盤を軽く前傾させ、力を伝えやすくしましょう"),
+        "support_leg": ("plant_leg", "軸足", 140, 175, "軸足の膝角度が理想から外れています",
+                        "軸足の膝を軽く曲げ、着地の衝撃を吸収しましょう"),
+        "backswing": ("kicking_leg", "蹴り足", 60, 110, "バックスイングの深さが理想から外れています",
+                      "かかとをお尻に近づけ、深くスイングしましょう"),
+        "knee_impact": ("kicking_leg", "蹴り足", 110, 150, "インパクト時の膝角度が理想から外れています",
+                        "インパクトで膝をしっかり伸ばし切りましょう"),
+        "ankle_impact": ("kicking_leg", "蹴り足", 120, 160, "足首の固定が理想から外れています",
+                         "足首を固定してミートの精度を高めましょう"),
+        "follow_through": ("kicking_leg", "蹴り足", 110, 150, "フォロースルーが理想から外れています",
+                           "蹴り足を最後まで大きく振り抜きましょう"),
+    }
+
+    def _improvement_rankings(self, key_angles: List[dict], body_part_scores: dict) -> List[dict]:
+        """key_angles の理想値からの乖離（正規化）と部位スコアで重大度順に並べる
+
+        理想レンジ内の角度は問題なしとして除外し、レンジ外のものだけを
+        |value - ideal| / ideal の正規化乖離が大きい順に最大5件返す。
+        """
+        candidates = []
+        for ka in key_angles:
+            meta = self._RANKING_META.get(ka["key"])
+            if meta is None:
+                continue
+            ideal = ka.get("ideal")
+            value = ka.get("value")
+            if not ideal or value is None:
+                continue
+            part, label, lo, hi, issue, advice = meta
+            if lo <= value <= hi:
+                continue  # 理想レンジ内は問題なし（乖離ゼロ扱い）
+            norm_dev = abs(value - ideal) / abs(ideal)
+            part_score = body_part_scores.get(part, {}).get("score", 100)
+            if norm_dev >= 0.30 or part_score < 50:
+                severity = "high"
+            elif norm_dev >= 0.12 or part_score < 75:
+                severity = "mid"
+            else:
+                severity = "low"
+            candidates.append({
+                "part": part,
+                "label": label,
+                "issue": issue,
+                "advice": advice,
+                "delta_deg": round(abs(value - ideal), 1),
+                "severity": severity,
+                "_norm_dev": norm_dev,
+            })
+
+        candidates.sort(key=lambda c: c["_norm_dev"], reverse=True)
+        rankings = []
+        for rank, c in enumerate(candidates[:5], start=1):
+            c.pop("_norm_dev", None)
+            rankings.append({"rank": rank, **c})
+        return rankings
+
+    # ------------------------------------------------------------------
     # 描画
     # ------------------------------------------------------------------
 
     def _draw_skeleton(self, frame: np.ndarray, pts: dict, angles: dict) -> np.ndarray:
-        overlay = frame.copy()
+        """モックアップ風の AR オーバーレイを描画
 
-        # グロー（太い半透明線）→ 本線 の2層でネオン風に
+        - 3層グロー + シアン寄りの本線によるネオンスケルトン
+        - 主要関節の破線サークルと角度円弧
+        - リーダー線付きの半透明角度チップ
+        """
+        h, w = frame.shape[:2]
+        scale = max(0.6, min(w, h) / 720.0)
+
+        # --- グロー（2層の半透明太線） ---
+        overlay = frame.copy()
         for a, b in SKELETON_CONNECTIONS:
             if a in pts and b in pts:
                 pa = (int(pts[a][0]), int(pts[a][1]))
                 pb = (int(pts[b][0]), int(pts[b][1]))
-                cv2.line(overlay, pa, pb, NEON_GREEN_GLOW, 7, cv2.LINE_AA)
+                cv2.line(overlay, pa, pb, NEON_GREEN_GLOW, int(10 * scale), cv2.LINE_AA)
+        frame = cv2.addWeighted(overlay, 0.25, frame, 0.75, 0)
 
+        overlay = frame.copy()
+        for a, b in SKELETON_CONNECTIONS:
+            if a in pts and b in pts:
+                pa = (int(pts[a][0]), int(pts[a][1]))
+                pb = (int(pts[b][0]), int(pts[b][1]))
+                cv2.line(overlay, pa, pb, NEON_GREEN, int(5 * scale), cv2.LINE_AA)
         frame = cv2.addWeighted(overlay, 0.35, frame, 0.65, 0)
 
+        # --- 本線 ---
         for a, b in SKELETON_CONNECTIONS:
             if a in pts and b in pts:
                 pa = (int(pts[a][0]), int(pts[a][1]))
                 pb = (int(pts[b][0]), int(pts[b][1]))
-                cv2.line(frame, pa, pb, NEON_GREEN, 2, cv2.LINE_AA)
+                cv2.line(frame, pa, pb, NEON_GREEN, max(2, int(2 * scale)), cv2.LINE_AA)
 
+        # --- 関節点（白コア + ネオンリング） ---
         for idx in LANDMARK_NAMES:
             if idx in pts:
                 p = (int(pts[idx][0]), int(pts[idx][1]))
-                cv2.circle(frame, p, 4, NEON_GREEN, -1, cv2.LINE_AA)
-                cv2.circle(frame, p, 2, JOINT_COLOR, -1, cv2.LINE_AA)
+                cv2.circle(frame, p, int(6 * scale), NEON_GREEN, 1, cv2.LINE_AA)
+                cv2.circle(frame, p, int(3 * scale), JOINT_COLOR, -1, cv2.LINE_AA)
 
-        # 主要関節に角度バッジを描画
-        badge_targets = {
-            "left_knee": 25, "right_knee": 26,
-            "left_hip": 23, "right_hip": 24,
-        }
-        for name, idx in badge_targets.items():
-            if name in angles and idx in pts:
-                self._draw_angle_badge(frame, pts[idx], f"{angles[name]:.0f}°")
+        # --- 主要関節: 破線サークル + 角度円弧 + リーダー線チップ ---
+        arc_joints = [
+            ("left_knee", 25, 23, 27),
+            ("right_knee", 26, 24, 28),
+            ("left_hip", 23, 11, 25),
+            ("right_hip", 24, 12, 26),
+            ("left_elbow", 13, 11, 15),
+            ("right_elbow", 14, 12, 16),
+        ]
+        for name, joint, parent, child in arc_joints:
+            if name not in angles or joint not in pts:
+                continue
+            jp = pts[joint]
+            self._draw_dashed_circle(frame, jp, int(16 * scale), NEON_GREEN)
+            if parent in pts and child in pts:
+                self._draw_angle_arc(frame, jp, pts[parent], pts[child], int(26 * scale))
+            # 膝と股関節はモックアップ風の大型角度テキストを表示
+            # （肘は円弧のみで情報過多を避ける）
+            if "knee" in name or "hip" in name:
+                # 体の外側にオフセット（左関節は左へ、右関節は右へ）
+                direction = -1 if name.startswith("left") else 1
+                self._draw_angle_text(frame, jp, f"{angles[name]:.0f}", scale, direction)
 
+        # 体幹の傾きは頭の横にチップ表示（アバター顔と重ならない位置）
+        # （OpenCV は非 ASCII を描画できないためラベルは英字）
         if "torso_lean" in angles and 11 in pts and 12 in pts:
-            mid = (int((pts[11][0] + pts[12][0]) / 2), int((pts[11][1] + pts[12][1]) / 2) - 30)
-            self._draw_angle_badge(frame, mid, f"{angles['torso_lean']:.0f}°")
+            mid = ((pts[11][0] + pts[12][0]) / 2 + 78 * scale,
+                   (pts[11][1] + pts[12][1]) / 2 - 46 * scale)
+            self._draw_angle_chip(frame, mid, f"LEAN {angles['torso_lean']:.0f}", scale, leader=False)
 
         return frame
 
-    def _draw_angle_badge(self, frame: np.ndarray, pos, text: str) -> None:
-        x, y = int(pos[0]) + 10, int(pos[1]) - 10
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+    @staticmethod
+    def _dark_gradient(shape) -> np.ndarray:
+        """スタジアム風のダークグラデーション背景"""
+        h, w = shape[:2]
+        base = np.linspace(18, 34, h, dtype=np.uint8)
+        canvas = np.zeros((h, w, 3), dtype=np.uint8)
+        canvas[:, :, 0] = base[:, None]              # B
+        canvas[:, :, 1] = (base * 1.4).astype(np.uint8)[:, None]  # G（緑がかった闇）
+        canvas[:, :, 2] = base[:, None]              # R
+        return canvas
+
+    @staticmethod
+    def _focus_person(frame: np.ndarray, seg_mask) -> np.ndarray:
+        """セグメンテーションマスクで背景を暗く落とし、人物を際立たせる"""
+        if seg_mask is None:
+            return frame
+        m = (seg_mask > 0.5).astype(np.float32)
+        if m.sum() < 200:  # マスクが小さすぎる場合は信頼しない
+            return frame
+        m = cv2.GaussianBlur(m, (21, 21), 0)[..., None]
+        bg = (frame * 0.45).astype(np.uint8)
+        return (frame * m + bg * (1.0 - m)).astype(np.uint8)
+
+    def _draw_avatar_view(self, frame: np.ndarray, seg_mask, pts: dict, angles: dict) -> np.ndarray:
+        """骨格（アバター）ビュー
+
+        セグメンテーションが取れた場合は実人物の切り抜きを
+        ダーク背景に合成し、輪郭にネオンのリムライトを付ける。
+        取れない場合は体にボリュームのあるマネキンを描画する。
+        いずれも上から骨格・角度を重ねるため、フォームが立体的に読める。
+        """
+        canvas = self._dark_gradient(frame.shape)
+
+        use_mask = seg_mask is not None and (seg_mask > 0.5).sum() >= 200
+        if use_mask:
+            m = (seg_mask > 0.5).astype(np.uint8)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+
+            # リムライト: 人物輪郭の外側にネオングロー
+            rim = cv2.dilate(m, kernel) - m
+            rim_soft = cv2.GaussianBlur(rim.astype(np.float32), (15, 15), 0)[..., None]
+            glow = np.zeros_like(canvas)
+            glow[:] = NEON_GREEN
+            canvas = (canvas * (1 - rim_soft * 0.85) + glow * (rim_soft * 0.85)).astype(np.uint8)
+
+            # 人物の切り抜きを少し明るくして合成
+            mf = cv2.GaussianBlur(m.astype(np.float32), (7, 7), 0)[..., None]
+            person = cv2.convertScaleAbs(frame, alpha=1.08, beta=6)
+            canvas = (person * mf + canvas * (1.0 - mf)).astype(np.uint8)
+        else:
+            self._draw_mannequin(canvas, pts)
+
+        return self._draw_skeleton(canvas, pts, angles)
+
+    def _draw_mannequin(self, canvas: np.ndarray, pts: dict) -> None:
+        """ランドマークから体にボリュームのあるマネキンを描画（棒人間の代替）
+
+        手足を太いカプセル（先細り）、胴体を塗りつぶし多角形、
+        頭部を塗りつぶし円で表現し、輪郭にネオンのリムを付ける。
+        """
+        def get(i):
+            p = pts.get(i)
+            return (int(p[0]), int(p[1])) if p else None
+
+        shoulder_l, shoulder_r = get(11), get(12)
+        hip_l, hip_r = get(23), get(24)
+        nose = get(0)
+        if not all((shoulder_l, shoulder_r, hip_l, hip_r)):
+            return
+
+        # 体格スケール: 肩中点〜腰中点の距離
+        sm = ((shoulder_l[0] + shoulder_r[0]) // 2, (shoulder_l[1] + shoulder_r[1]) // 2)
+        hm = ((hip_l[0] + hip_r[0]) // 2, (hip_l[1] + hip_r[1]) // 2)
+        torso_h = max(24.0, math.hypot(sm[0] - hm[0], sm[1] - hm[1]))
+
+        BODY_FILL = (52, 66, 58)      # ダークスレート（BGR）
+        BODY_SHADE = (38, 50, 44)
+        RIM = NEON_GREEN_GLOW
+
+        def capsule(a, b, r1, r2, color=BODY_FILL):
+            """先細りのカプセル（四辺形 + 両端円）"""
+            if a is None or b is None:
+                return
+            ax, ay = a
+            bx, by = b
+            dx, dy = bx - ax, by - ay
+            n = math.hypot(dx, dy)
+            if n < 1e-3:
+                return
+            nx, ny = -dy / n, dx / n
+            quad = np.array([
+                [ax + nx * r1, ay + ny * r1],
+                [bx + nx * r2, by + ny * r2],
+                [bx - nx * r2, by - ny * r2],
+                [ax - nx * r1, ay - ny * r1],
+            ], dtype=np.int32)
+            cv2.fillPoly(canvas, [quad], color, cv2.LINE_AA)
+            cv2.circle(canvas, (int(ax), int(ay)), int(r1), color, -1, cv2.LINE_AA)
+            cv2.circle(canvas, (int(bx), int(by)), int(r2), color, -1, cv2.LINE_AA)
+            # リムライト
+            cv2.polylines(canvas, [quad], True, RIM, 1, cv2.LINE_AA)
+
+        # 太さ（体格比）
+        thigh = torso_h * 0.20
+        shin = torso_h * 0.15
+        upper_arm = torso_h * 0.13
+        forearm = torso_h * 0.10
+        foot = torso_h * 0.10
+
+        # 脚（腿 → すね → 足）
+        capsule(get(23), get(25), thigh, thigh * 0.75)
+        capsule(get(25), get(27), shin, shin * 0.7, BODY_SHADE)
+        capsule(get(27), get(31), foot, foot * 0.8, BODY_SHADE)
+        capsule(get(24), get(26), thigh, thigh * 0.75)
+        capsule(get(26), get(28), shin, shin * 0.7, BODY_SHADE)
+        capsule(get(28), get(32), foot, foot * 0.8, BODY_SHADE)
+
+        # 胴体（肩幅・腰幅を少し広げた四角形）
+        def widen(p, q, factor):
+            cx_, cy_ = (p[0] + q[0]) / 2, (p[1] + q[1]) / 2
+            return (
+                (int(cx_ + (p[0] - cx_) * factor), int(cy_ + (p[1] - cy_) * factor)),
+                (int(cx_ + (q[0] - cx_) * factor), int(cy_ + (q[1] - cy_) * factor)),
+            )
+
+        sl, sr = widen(shoulder_l, shoulder_r, 1.25)
+        hl, hr = widen(hip_l, hip_r, 1.15)
+        torso_poly = np.array([sl, sr, hr, hl], dtype=np.int32)
+        cv2.fillPoly(canvas, [torso_poly], BODY_FILL, cv2.LINE_AA)
+        cv2.polylines(canvas, [torso_poly], True, RIM, 1, cv2.LINE_AA)
+
+        # 腕（上腕 → 前腕）: 胴体の上に描く
+        capsule(get(11), get(13), upper_arm, upper_arm * 0.8)
+        capsule(get(13), get(15), forearm, forearm * 0.7, BODY_SHADE)
+        capsule(get(12), get(14), upper_arm, upper_arm * 0.8)
+        capsule(get(14), get(16), forearm, forearm * 0.7, BODY_SHADE)
+
+        # 首と頭
+        if nose:
+            head_r = int(torso_h * 0.24)
+            neck = (int((sm[0] + nose[0]) / 2), int((sm[1] + nose[1]) / 2))
+            capsule(sm, neck, upper_arm * 0.9, upper_arm * 0.8)
+            head_c = (nose[0], nose[1] - head_r // 4)
+            cv2.circle(canvas, head_c, head_r, BODY_FILL, -1, cv2.LINE_AA)
+            cv2.circle(canvas, head_c, head_r, RIM, 1, cv2.LINE_AA)
+
+    def _draw_avatar_face(self, frame: np.ndarray, pts: dict) -> None:
+        """リアル調のアバターヘッドで顔を覆う（匿名化オプション）
+
+        鼻(0)と両耳(7, 8)から頭のサイズ・向きを推定し、
+        肌のシェーディング・自然な目鼻立ち・ソフトな髪を持つ
+        3D アバター風の頭部（オリジナル描画）に置き換える。
+        """
+        nose = pts.get(0)
+        if nose is None:
+            return
+
+        # 頭の半径: 両耳の距離 → 片耳と鼻の距離 → 肩幅 の順で推定
+        ear_l, ear_r = pts.get(7), pts.get(8)
+        if ear_l and ear_r:
+            head_r = int(math.hypot(ear_l[0] - ear_r[0], ear_l[1] - ear_r[1]) * 0.95)
+        elif ear_l or ear_r:
+            ear = ear_l or ear_r
+            head_r = int(math.hypot(ear[0] - nose[0], ear[1] - nose[1]) * 1.5)
+        elif pts.get(11) and pts.get(12):
+            sw = math.hypot(pts[11][0] - pts[12][0], pts[11][1] - pts[12][1])
+            head_r = int(sw * 0.42)
+        else:
+            return
+        head_r = max(12, head_r)
+
+        cx, cy = int(nose[0]), int(nose[1]) - head_r // 6
+
+        # 顔の向き: 鼻が両耳の中点からどれだけずれているか（-1〜1）
+        facing = 0.0
+        if ear_l and ear_r:
+            ear_mid_x = (ear_l[0] + ear_r[0]) / 2
+            spread = max(1.0, abs(ear_l[0] - ear_r[0]))
+            facing = float(np.clip((nose[0] - ear_mid_x) / spread, -1.0, 1.0))
+        elif ear_l:
+            facing = 0.6   # 左耳のみ見える → 右向き
+        elif ear_r:
+            facing = -0.6  # 右耳のみ見える → 左向き
+
         h, w = frame.shape[:2]
-        x = min(max(0, x), max(0, w - tw - 12))
-        y = min(max(th + 10, y), h - 6)
-        cv2.rectangle(frame, (x - 4, y - th - 6), (x + tw + 8, y + 4), ANGLE_BADGE_BG, -1)
-        cv2.rectangle(frame, (x - 4, y - th - 6), (x + tw + 8, y + 4), NEON_GREEN_GLOW, 1)
-        cv2.putText(frame, text, (x + 2, y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                    ANGLE_BADGE_TEXT, 1, cv2.LINE_AA)
+
+        # 頭部は別レイヤーに描いてから、フェザー付きマスクで合成する
+        # （ソフトシェーディングで実写になじむリアル調に仕上げるため）
+        layer = frame.copy()
+
+        SKIN = (150, 182, 224)        # 自然な肌色 (BGR)
+        SKIN_SHADOW = (110, 140, 188)
+        SKIN_LIGHT = (176, 206, 240)
+        HAIR = (34, 30, 24)           # ダークブラウン
+        HAIR_LIGHT = (62, 56, 46)
+        BROW = (48, 44, 38)
+        EYE_DARK = (40, 34, 26)
+        LIP = (112, 118, 178)
+
+        axes = (head_r, int(head_r * 1.14))
+        shift = int(facing * head_r * 0.24)
+
+        # --- 肌のベースとシェーディング ---
+        cv2.ellipse(layer, (cx, cy), axes, 0, 0, 360, SKIN, -1, cv2.LINE_AA)
+        # 顎下と輪郭の影
+        cv2.ellipse(layer, (cx + int(head_r * 0.18) - shift, cy + int(head_r * 0.3)),
+                    (int(head_r * 0.85), int(head_r * 0.9)), 0, 20, 160, SKIN_SHADOW, -1, cv2.LINE_AA)
+        cv2.ellipse(layer, (cx, cy), axes, 0, 0, 360, SKIN, int(head_r * 0.28), cv2.LINE_AA)
+        # 額のハイライト
+        cv2.ellipse(layer, (cx - int(head_r * 0.2) + shift, cy - int(head_r * 0.35)),
+                    (int(head_r * 0.5), int(head_r * 0.35)), 0, 0, 360, SKIN_LIGHT, -1, cv2.LINE_AA)
+
+        # --- 耳（横向きのとき見える側だけ強調） ---
+        for side, vis in ((-1, facing <= 0.3), (1, facing >= -0.3)):
+            if vis:
+                ex = cx + side * int(head_r * 0.96) + shift // 2
+                cv2.ellipse(layer, (ex, cy + int(head_r * 0.1)),
+                            (int(head_r * 0.14), int(head_r * 0.22)), 0, 0, 360, SKIN, -1, cv2.LINE_AA)
+                cv2.ellipse(layer, (ex, cy + int(head_r * 0.1)),
+                            (int(head_r * 0.14), int(head_r * 0.22)), 0, 0, 360, SKIN_SHADOW, 1, cv2.LINE_AA)
+
+        # --- 髪（ショートヘア: 上部を覆い、こめかみへ自然に下ろす） ---
+        cv2.ellipse(layer, (cx + shift // 3, cy - int(head_r * 0.28)),
+                    (int(head_r * 1.02), int(head_r * 0.78)), 0, 180, 360, HAIR, -1, cv2.LINE_AA)
+        # 生え際（ゆるい波）と、もみあげ
+        hairline_y = cy - int(head_r * 0.42)
+        for k in range(5):
+            hx = cx - head_r + int((2 * head_r / 5) * (k + 0.5)) + shift // 2
+            cv2.ellipse(layer, (hx, hairline_y), (int(head_r * 0.18), int(head_r * 0.14)),
+                        0, 0, 180, HAIR, -1, cv2.LINE_AA)
+        for side in (-1, 1):
+            sx = cx + side * int(head_r * 0.88) + shift // 2
+            cv2.ellipse(layer, (sx, cy - int(head_r * 0.05)),
+                        (int(head_r * 0.16), int(head_r * 0.38)), side * 12, 0, 360, HAIR, -1, cv2.LINE_AA)
+        # 髪のツヤ
+        cv2.ellipse(layer, (cx - int(head_r * 0.25) + shift, cy - int(head_r * 0.72)),
+                    (int(head_r * 0.4), int(head_r * 0.16)), -18, 0, 360, HAIR_LIGHT, -1, cv2.LINE_AA)
+
+        # --- 眉と目（自然なアーモンド形・向きに追従） ---
+        eye_dy = int(head_r * 0.02)
+        eye_dx = int(head_r * 0.4)
+        eye_w = max(3, int(head_r * 0.2))
+        eye_h = max(2, int(head_r * 0.09))
+        for side in (-1, 1):
+            ex = cx + side * eye_dx + shift
+            ey = cy + eye_dy
+            # 眉
+            cv2.ellipse(layer, (ex, ey - int(head_r * 0.2)), (eye_w, max(1, eye_h // 2)),
+                        side * 8, 180, 360, BROW, max(2, head_r // 14), cv2.LINE_AA)
+            # 目のくぼみの影 → 白目 → 虹彩 → ハイライト → 上まぶたライン
+            cv2.ellipse(layer, (ex, ey), (eye_w, eye_h + 1), 0, 0, 360, SKIN_SHADOW, -1, cv2.LINE_AA)
+            cv2.ellipse(layer, (ex, ey), (eye_w - 1, eye_h), 0, 0, 360, (245, 245, 245), -1, cv2.LINE_AA)
+            iris_x = ex + shift // 2
+            cv2.circle(layer, (iris_x, ey), max(2, int(eye_h * 0.95)), EYE_DARK, -1, cv2.LINE_AA)
+            cv2.circle(layer, (iris_x - 1, ey - 1), max(1, eye_h // 3), (230, 230, 230), -1, cv2.LINE_AA)
+            cv2.ellipse(layer, (ex, ey - 1), (eye_w, eye_h), 0, 180, 360, EYE_DARK, max(1, head_r // 22), cv2.LINE_AA)
+
+        # --- 鼻（陰影のみで表現） ---
+        nx = cx + shift
+        cv2.line(layer, (nx, cy + int(head_r * 0.08)), (nx - head_r // 12, cy + int(head_r * 0.34)),
+                 SKIN_SHADOW, max(1, head_r // 16), cv2.LINE_AA)
+        cv2.ellipse(layer, (nx, cy + int(head_r * 0.38)), (max(2, head_r // 9), max(1, head_r // 18)),
+                    0, 0, 180, SKIN_SHADOW, max(1, head_r // 20), cv2.LINE_AA)
+
+        # --- 口（引き締まった自然な口元） ---
+        my = cy + int(head_r * 0.62)
+        cv2.ellipse(layer, (nx, my), (max(3, int(head_r * 0.26)), max(1, head_r // 14)),
+                    0, 0, 180, LIP, max(2, head_r // 12), cv2.LINE_AA)
+        cv2.ellipse(layer, (nx, my + max(1, head_r // 16)), (max(2, int(head_r * 0.18)), max(1, head_r // 20)),
+                    0, 0, 180, SKIN_SHADOW, 1, cv2.LINE_AA)
+
+        # --- ソフトブラーで滑らかにし、フェザーマスクで合成 ---
+        blur_k = max(3, (head_r // 6) | 1)
+        layer = cv2.GaussianBlur(layer, (blur_k, blur_k), 0)
+
+        mask = np.zeros((h, w), dtype=np.float32)
+        cv2.ellipse(mask, (cx, cy), (int(axes[0] * 1.12), int(axes[1] * 1.1)), 0, 0, 360, 1.0, -1)
+        feather = max(3, (head_r // 4) | 1)
+        mask = cv2.GaussianBlur(mask, (feather, feather), 0)[..., None]
+        np.copyto(frame, (layer * mask + frame * (1.0 - mask)).astype(np.uint8))
+
+    @staticmethod
+    def _draw_dashed_circle(frame: np.ndarray, center, radius: int, color, dashes: int = 12) -> None:
+        """関節を囲む破線サークル"""
+        cx, cy = int(center[0]), int(center[1])
+        for i in range(dashes):
+            a0 = i * (360 / dashes)
+            a1 = a0 + (360 / dashes) * 0.55
+            cv2.ellipse(frame, (cx, cy), (radius, radius), 0, a0, a1, color, 1, cv2.LINE_AA)
+
+    @staticmethod
+    def _draw_angle_arc(frame: np.ndarray, joint, parent, child, radius: int) -> None:
+        """関節角度を可視化する円弧（2本の骨の間を塗る）"""
+        a_parent = math.degrees(math.atan2(parent[1] - joint[1], parent[0] - joint[0]))
+        a_child = math.degrees(math.atan2(child[1] - joint[1], child[0] - joint[0]))
+        start, end = a_parent % 360, a_child % 360
+        sweep = (end - start) % 360
+        if sweep > 180:
+            start, end = end, start + (360 - sweep)
+        else:
+            end = start + sweep
+
+        overlay = frame.copy()
+        cv2.ellipse(overlay, (int(joint[0]), int(joint[1])), (radius, radius),
+                    0, start, end, NEON_GREEN, -1, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, dst=frame)
+        cv2.ellipse(frame, (int(joint[0]), int(joint[1])), (radius, radius),
+                    0, start, end, NEON_GREEN, 1, cv2.LINE_AA)
+
+    @staticmethod
+    def _draw_angle_text(frame: np.ndarray, pos, text: str,
+                         scale: float, direction: int) -> None:
+        """モックアップ風の大型角度テキスト（暗色アウトライン + ネオン文字 + 度記号）"""
+        h, w = frame.shape[:2]
+        font_scale = 0.95 * scale
+        thickness = max(1, int(2 * scale))
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, font_scale, thickness)
+        deg_r = max(2, int(3 * scale))
+
+        offset_x = int(44 * scale)
+        x = int(pos[0]) + (offset_x if direction > 0 else -offset_x - tw - deg_r * 2)
+        y = int(pos[1]) - int(14 * scale)
+        x = min(max(4, x), max(4, w - tw - deg_r * 3 - 4))
+        y = min(max(th + 6, y), h - 8)
+
+        # アウトライン → 本文字 の2層でどんな背景でも読めるように
+        cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_DUPLEX,
+                    font_scale, (15, 25, 15), thickness + 3, cv2.LINE_AA)
+        cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_DUPLEX,
+                    font_scale, NEON_GREEN, thickness, cv2.LINE_AA)
+        # 度記号（右肩の小円）
+        cv2.circle(frame, (x + tw + deg_r + 2, y - th + deg_r),
+                   deg_r + 1, (15, 25, 15), 3, cv2.LINE_AA)
+        cv2.circle(frame, (x + tw + deg_r + 2, y - th + deg_r),
+                   deg_r, NEON_GREEN, 1, cv2.LINE_AA)
+
+    def _draw_angle_chip(self, frame: np.ndarray, pos, text: str,
+                         scale: float, leader: bool = True) -> None:
+        """リーダー線付きの半透明角度チップ（モックアップの注釈風）
+
+        OpenCV の putText は「°」を描画できないため、
+        度記号はテキストの右肩に小円として手描きする。
+        """
+        h, w = frame.shape[:2]
+        font_scale = 0.5 * scale
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+        deg_r = max(2, int(2 * scale))          # 度記号の半径
+        deg_space = deg_r * 2 + 3               # 度記号ぶんの余白
+        pad = int(6 * scale)
+
+        # チップはデフォルトで右上方向へオフセット。はみ出す場合は左へ反転
+        offset = int(34 * scale)
+        cx = int(pos[0]) + offset
+        cy = int(pos[1]) - offset
+        if cx + tw + deg_space + pad * 2 > w:
+            cx = int(pos[0]) - offset - tw - deg_space - pad * 2
+        cx = max(2, cx)
+        cy = max(th + pad + 2, min(cy, h - pad - 2))
+
+        x1, y1 = cx, cy - th - pad
+        x2, y2 = cx + tw + deg_space + pad * 2, cy + pad
+
+        if leader:
+            anchor_x = x1 if abs(x1 - pos[0]) < abs(x2 - pos[0]) else x2
+            cv2.line(frame, (int(pos[0]), int(pos[1])), (anchor_x, (y1 + y2) // 2),
+                     NEON_GREEN, 1, cv2.LINE_AA)
+
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), ANGLE_BADGE_BG, -1)
+        cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, dst=frame)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), NEON_GREEN_GLOW, 1, cv2.LINE_AA)
+        cv2.putText(frame, text, (x1 + pad, y2 - pad), cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale, ANGLE_BADGE_TEXT, 1, cv2.LINE_AA)
+        # 度記号（右肩の小円）
+        cv2.circle(frame, (x1 + pad + tw + deg_r + 2, y1 + pad + deg_r),
+                   deg_r, ANGLE_BADGE_TEXT, 1, cv2.LINE_AA)
 
     @staticmethod
     def _to_base64(frame: np.ndarray) -> str:
@@ -410,3 +1434,86 @@ class PoseEstimator:
         if not ok:
             raise ValueError("画像のエンコードに失敗しました")
         return base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    # ------------------------------------------------------------------
+    # ボール初速の推定（概算）
+    # ------------------------------------------------------------------
+
+    def estimate_ball_speed(
+        self,
+        frames_bgr: List[np.ndarray],
+        frame_indices: List[int],
+        fps: float,
+        poses: List[dict],
+        person_height_m: float = 1.7,
+    ) -> Optional[dict]:
+        """連続フレーム間のボール移動量から初速を概算する
+
+        スケールは骨格の身長（鼻〜足首のピクセル距離）を
+        person_height_m とみなして校正する。校正・検出とも
+        粗い前提のため「推定値」として扱うこと。
+        """
+        if fps <= 0 or len(frames_bgr) < 2:
+            return None
+
+        # 骨格からピクセル身長を推定（検出できたフレームの中央値）
+        px_heights = []
+        for p in poses:
+            lms = {lm["name"]: lm for lm in p.get("landmarks", [])}
+            if "nose" in lms and ("left_ankle" in lms or "right_ankle" in lms):
+                ankle = lms.get("left_ankle") or lms.get("right_ankle")
+                h_img = frames_bgr[0].shape[0]
+                px = abs(ankle["y"] - lms["nose"]["y"]) * h_img / 0.88  # 鼻〜足首 ≈ 身長の88%
+                if px > 20:
+                    px_heights.append(px)
+        if not px_heights:
+            return None
+        m_per_px = person_height_m / float(np.median(px_heights))
+
+        # 各フレームのボール位置（白い円形ブロブ）
+        centers = []
+        for frame in frames_bgr:
+            centers.append(self._find_ball_center(frame))
+
+        # 連続する2フレームでともに検出できた区間の最大速度
+        best_kmh = None
+        for i in range(len(centers) - 1):
+            c0, c1 = centers[i], centers[i + 1]
+            if c0 is None or c1 is None:
+                continue
+            dt = (frame_indices[i + 1] - frame_indices[i]) / fps
+            if dt <= 0:
+                continue
+            dist_m = math.hypot(c1[0] - c0[0], c1[1] - c0[1]) * m_per_px
+            kmh = dist_m / dt * 3.6
+            if best_kmh is None or kmh > best_kmh:
+                best_kmh = kmh
+
+        if best_kmh is None or not (5.0 <= best_kmh <= 160.0):
+            return None
+        return {"speed_kmh": round(best_kmh), "approximate": True}
+
+    @staticmethod
+    def _find_ball_center(frame: np.ndarray) -> Optional[tuple]:
+        """フレーム下半分から白い円形ブロブ（ボール）を探す"""
+        h, w = frame.shape[:2]
+        roi = frame[h // 3:, :]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        white = cv2.inRange(hsv, (0, 0, 170), (180, 70, 255))
+        contours, _ = cv2.findContours(white, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+        best = None
+        best_score = 0.0
+        for c in contours:
+            area = cv2.contourArea(c)
+            if not (20 <= area <= (h * w) * 0.01):
+                continue
+            peri = cv2.arcLength(c, True)
+            if peri == 0:
+                continue
+            circularity = 4 * np.pi * area / (peri * peri)
+            if circularity > max(0.65, best_score):
+                x, y, bw, bh = cv2.boundingRect(c)
+                best_score = circularity
+                best = (x + bw / 2, y + bh / 2 + h // 3)
+        return best
