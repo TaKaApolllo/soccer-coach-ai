@@ -1,4 +1,4 @@
-import { BodyPartScores, PoseLandmark } from '../../types'
+import { BodyPartScore, BodyPartScores, PoseLandmark } from '../../types'
 import { IDEAL_ANGLES } from '../../mocks/formAnalysisMock'
 import AvatarViewer from './AvatarViewer'
 
@@ -19,8 +19,8 @@ function diffColor(absDiff: number): string {
  * Before/After（現在フォーム vs 理想フォーム）の並び比較 + 関節角度の差分テーブル。
  */
 function ComparisonView({ currentLandmarks, bodyPartScores, overallScore, idealScore = 92 }: ComparisonViewProps) {
-  const rows = Object.values(bodyPartScores)
-    .filter((p): p is NonNullable<typeof p> => !!p)
+  const rows = (Object.values(bodyPartScores) as (BodyPartScore | undefined)[])
+    .filter((p): p is BodyPartScore => !!p)
     .flatMap((part) =>
       Object.entries(part.angles).map(([key, value]) => {
         const ref = IDEAL_ANGLES[key]

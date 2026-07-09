@@ -154,10 +154,16 @@ function KickAnalysisPage() {
             </button>
           ))}
         </div>
+        <Link
+          to="/form-analysis"
+          className="btn btn-ghost btn-small"
+          style={{ marginLeft: 'auto', textDecoration: 'none' }}
+        >
+          ✨ フォーム分析
+        </Link>
         <button
           className={`btn btn-ghost btn-small ${tilt3d ? 'accent-text' : ''}`}
           onClick={() => setTilt3d(!tilt3d)}
-          style={{ marginLeft: 'auto' }}
         >
           ⦿ 3Dビュー
         </button>

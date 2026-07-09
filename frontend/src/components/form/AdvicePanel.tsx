@@ -1,4 +1,4 @@
-import { BodyPartScores, ImprovementRanking, ImprovementSeverity } from '../../types'
+import { BodyPartScore, BodyPartScores, ImprovementRanking, ImprovementSeverity } from '../../types'
 import { STATUS_COLOR } from './GaugeRing'
 
 const SEVERITY_COLOR: Record<ImprovementSeverity, string> = {
@@ -23,7 +23,8 @@ interface AdvicePanelProps {
  * 良い点は緑チェック、改善点は警告アイコンで色分けして表示する。
  */
 function AdvicePanel({ bodyPartScores, rankings }: AdvicePanelProps) {
-  const parts = Object.values(bodyPartScores).filter((p): p is NonNullable<typeof p> => !!p)
+  const parts = (Object.values(bodyPartScores) as (BodyPartScore | undefined)[])
+    .filter((p): p is BodyPartScore => !!p)
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
