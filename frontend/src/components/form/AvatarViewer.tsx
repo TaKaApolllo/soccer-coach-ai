@@ -100,8 +100,8 @@ function AvatarViewer({ landmarks, title, hideToggle = false, forceView, size = 
   const headR = Math.max(14, shoulderWidth * 0.42)
   const headCenter: Pt | null = nose ? [nose[0], nose[1] - headR * 0.25] : null
 
-  const BODY_FILL = 'rgba(18, 26, 22, 0.92)'
-  const BODY_STROKE = 'rgba(255,255,255,0.06)'
+  const BODY_FILL = '#2b4033'
+  const BODY_STROKE = 'rgba(160, 235, 195, 0.22)'
   const NEON = '#39ff8f'
 
   return (
@@ -112,19 +112,23 @@ function AvatarViewer({ landmarks, title, hideToggle = false, forceView, size = 
             type="button"
             onClick={() => setView('current')}
             disabled={!hasCurrent}
-            className={`rounded-full px-3 py-1 transition-colors ${
+            style={{ border: 'none', fontFamily: 'inherit' }}
+            className={`rounded-full px-3 py-1 transition-colors cursor-pointer ${
               effectiveView === 'current' || !hasCurrent
-                ? 'bg-emerald-400/90 text-black'
-                : 'text-white/60 hover:text-white'
-            } ${!hasCurrent ? 'cursor-not-allowed opacity-60' : ''}`}
+                ? '!bg-emerald-400/90 !text-black'
+                : '!bg-transparent !text-white/60 hover:!text-white'
+            } ${!hasCurrent ? '!cursor-not-allowed opacity-60' : ''}`}
           >
             現在フォーム
           </button>
           <button
             type="button"
             onClick={() => setView('ideal')}
-            className={`rounded-full px-3 py-1 transition-colors ${
-              effectiveView === 'ideal' && hasCurrent ? 'bg-emerald-400/90 text-black' : 'text-white/60 hover:text-white'
+            style={{ border: 'none', fontFamily: 'inherit' }}
+            className={`rounded-full px-3 py-1 transition-colors cursor-pointer ${
+              effectiveView === 'ideal' && hasCurrent
+                ? '!bg-emerald-400/90 !text-black'
+                : '!bg-transparent !text-white/60 hover:!text-white'
             }`}
           >
             理想フォーム
@@ -187,8 +191,38 @@ function AvatarViewer({ landmarks, title, hideToggle = false, forceView, size = 
         <rect x="0" y={H - 96} width={W} height="96" fill="url(#stadiumBg)" opacity="0.25" />
         <line x1="16" y1={H - 40} x2={W - 16} y2={H - 40} stroke="rgba(255,255,255,0.18)" strokeWidth="1.5" />
 
+        {/* シルエットのリム（輪郭の淡い光） */}
+        <g opacity="0.9">
+          {LIMBS.map(([a, b, width], i) => {
+            const pa = joints[a]
+            const pb = joints[b]
+            if (!pa || !pb) return null
+            return (
+              <line
+                key={`rim-${i}`}
+                x1={pa[0]} y1={pa[1]} x2={pb[0]} y2={pb[1]}
+                strokeWidth={width + 3}
+                stroke={BODY_STROKE}
+                strokeLinecap="round"
+              />
+            )
+          })}
+          {shoulderL && shoulderR && hipL && hipR && (
+            <polygon
+              points={`${shoulderL.join(',')} ${shoulderR.join(',')} ${hipR.join(',')} ${hipL.join(',')}`}
+              fill="none"
+              stroke={BODY_STROKE}
+              strokeWidth="3.5"
+              strokeLinejoin="round"
+            />
+          )}
+          {headCenter && (
+            <circle cx={headCenter[0]} cy={headCenter[1]} r={headR + 1.5} fill="none" stroke={BODY_STROKE} strokeWidth="2.5" />
+          )}
+        </g>
+
         {/* シルエット（ボリュームのある塗り） */}
-        <g fill={BODY_FILL} stroke={BODY_STROKE} strokeWidth="1">
+        <g fill={BODY_FILL}>
           {LIMBS.map(([a, b, width], i) => {
             const pa = joints[a]
             const pb = joints[b]

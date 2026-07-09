@@ -32,12 +32,12 @@ function ScoreCard({ label, score, status, angles, headline, detail, variant = '
   return (
     <div
       className={`rounded-3xl border border-white/10 bg-white/[0.06] backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.45)] ${
-        isHero ? 'p-8' : 'p-5'
-      } flex ${isHero ? 'flex-row items-center gap-8' : 'flex-col items-center gap-3'} h-full`}
+        isHero ? 'p-8 justify-center' : 'p-5'
+      } flex flex-col items-center ${isHero ? 'gap-5' : 'gap-3'} h-full`}
     >
-      <GaugeRing score={score} size={isHero ? 168 : 96} status={resolvedStatus} />
+      <GaugeRing score={score} size={isHero ? 176 : 96} status={resolvedStatus} />
 
-      <div className={isHero ? 'flex-1 text-left' : 'w-full text-center'}>
+      <div className="w-full text-center">
         <div
           className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
             isHero ? 'mb-3' : 'mb-2'
@@ -54,7 +54,7 @@ function ScoreCard({ label, score, status, angles, headline, detail, variant = '
         {isHero && detail && <p className="text-white/60 text-sm leading-relaxed">{detail}</p>}
 
         {angles && Object.keys(angles).length > 0 && (
-          <div className={`flex flex-wrap gap-1.5 ${isHero ? 'mt-4' : 'mt-2 justify-center'}`}>
+          <div className={`flex flex-wrap justify-center gap-1.5 ${isHero ? 'mt-4' : 'mt-2'}`}>
             {Object.entries(angles).map(([key, value]) => (
               <span
                 key={key}
