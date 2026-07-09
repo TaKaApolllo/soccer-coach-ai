@@ -912,25 +912,30 @@ class PoseEstimator:
         }
 
     # key_angles の key と部位のひも付け（改善ランキング用）
+    # {key: (part, label, ideal_lo, ideal_hi, issue, advice)}
     _RANKING_META = {
-        "torso_lean": ("upper_body", "上半身", "体幹の傾きが理想から外れています",
+        "torso_lean": ("upper_body", "上半身", 5, 25, "体幹の傾きが理想から外れています",
                        "上体を適度に前傾させ、ボールに覆いかぶさる意識を持ちましょう"),
-        "pelvis_tilt": ("upper_body", "上半身", "骨盤の傾きが理想から外れています",
+        "pelvis_tilt": ("upper_body", "上半身", 3, 15, "骨盤の傾きが理想から外れています",
                         "骨盤を軽く前傾させ、力を伝えやすくしましょう"),
-        "support_leg": ("plant_leg", "軸足", "軸足の膝角度が理想から外れています",
+        "support_leg": ("plant_leg", "軸足", 140, 175, "軸足の膝角度が理想から外れています",
                         "軸足の膝を軽く曲げ、着地の衝撃を吸収しましょう"),
-        "backswing": ("kicking_leg", "蹴り足", "バックスイングの深さが理想から外れています",
+        "backswing": ("kicking_leg", "蹴り足", 60, 110, "バックスイングの深さが理想から外れています",
                       "かかとをお尻に近づけ、深くスイングしましょう"),
-        "knee_impact": ("kicking_leg", "蹴り足", "インパクト時の膝角度が理想から外れています",
+        "knee_impact": ("kicking_leg", "蹴り足", 110, 150, "インパクト時の膝角度が理想から外れています",
                         "インパクトで膝をしっかり伸ばし切りましょう"),
-        "ankle_impact": ("kicking_leg", "蹴り足", "足首の固定が理想から外れています",
+        "ankle_impact": ("kicking_leg", "蹴り足", 120, 160, "足首の固定が理想から外れています",
                          "足首を固定してミートの精度を高めましょう"),
-        "follow_through": ("kicking_leg", "蹴り足", "フォロースルーが理想から外れています",
+        "follow_through": ("kicking_leg", "蹴り足", 110, 150, "フォロースルーが理想から外れています",
                            "蹴り足を最後まで大きく振り抜きましょう"),
     }
 
     def _improvement_rankings(self, key_angles: List[dict], body_part_scores: dict) -> List[dict]:
-        """key_angles の理想値からの乖離（正規化）と部位スコアで重大度順に並べる"""
+        """key_angles の理想値からの乖離（正規化）と部位スコアで重大度順に並べる
+
+        理想レンジ内の角度は問題なしとして除外し、レンジ外のものだけを
+        |value - ideal| / ideal の正規化乖離が大きい順に最大5件返す。
+        """
         candidates = []
         for ka in key_angles:
             meta = self._RANKING_META.get(ka["key"])
@@ -940,10 +945,10 @@ class PoseEstimator:
             value = ka.get("value")
             if not ideal or value is None:
                 continue
+            part, label, lo, hi, issue, advice = meta
+            if lo <= value <= hi:
+                continue  # 理想レンジ内は問題なし（乖離ゼロ扱い）
             norm_dev = abs(value - ideal) / abs(ideal)
-            if norm_dev < 0.05:  # 乖離ゼロ扱い（理想フォーム）はランキングに載せない
-                continue
-            part, label, issue, advice = meta
             part_score = body_part_scores.get(part, {}).get("score", 100)
             if norm_dev >= 0.30 or part_score < 50:
                 severity = "high"
