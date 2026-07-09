@@ -15,6 +15,60 @@ export const cardStyle: CSSProperties = {
   boxShadow: '0 18px 40px -24px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.03)'
 }
 
+/** preflight 無効環境向けの button リセット（padding は Tailwind クラスに委ねる） */
+export const btnReset: CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  fontFamily: 'inherit',
+  color: 'inherit',
+  cursor: 'pointer'
+}
+
+/** セグメント切替（タブ / 比較モード）用のピルボタン */
+export function SegmentedControl<T extends string>({
+  options,
+  value,
+  onChange,
+  size = 'md'
+}: {
+  options: { id: T; label: string }[]
+  value: T
+  onChange: (v: T) => void
+  size?: 'sm' | 'md'
+}) {
+  return (
+    <div
+      className="inline-flex items-center gap-0.5 rounded-full p-1"
+      style={{ background: 'rgba(2, 6, 17, 0.6)', border: '1px solid rgba(148,163,184,0.18)' }}
+      role="tablist"
+    >
+      {options.map((opt) => {
+        const active = opt.id === value
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(opt.id)}
+            style={{
+              ...btnReset,
+              background: active ? 'rgba(34, 197, 94, 0.9)' : 'transparent',
+              color: active ? '#02120a' : 'rgba(226,232,240,0.62)',
+              boxShadow: active ? '0 0 14px rgba(57,255,136,0.35)' : 'none'
+            }}
+            className={`whitespace-nowrap rounded-full font-semibold transition-all ${
+              size === 'sm' ? 'px-2.5 py-1 text-[11px]' : 'px-3.5 py-1.5 text-xs'
+            }`}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export const TONE_COLOR: Record<Tone, string> = {
   good: '#39ff88',
   warn: '#facc15',
@@ -49,8 +103,8 @@ export function Card({ children, className = '', style, title, action, glow }: C
       }}
     >
       {(title || action) && (
-        <header className="mb-3 flex items-center justify-between gap-2">
-          {title && <h3 className="text-[13px] font-bold tracking-wide text-slate-100">{title}</h3>}
+        <header className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          {title && <h3 className="whitespace-nowrap text-[13px] font-bold tracking-wide text-slate-100">{title}</h3>}
           {action}
         </header>
       )}
