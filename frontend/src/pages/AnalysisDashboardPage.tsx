@@ -20,7 +20,7 @@ import {
 } from '../types'
 
 type BoardTab = '2d' | 'photo' | '3d'
-type PitchLayer = 'board' | 'detected' | 'space' | 'pass' | 'offside'
+type PitchLayer = 'board' | 'metrics' | 'detected' | 'space' | 'pass' | 'offside'
 
 const LEVEL_TABS: { id: CoachLevel; label: string }[] = [
   { id: 'beginner', label: '初心者' },
@@ -193,18 +193,21 @@ function AnalysisDashboardPage() {
                     <PitchView
                       teams={formation.teams}
                       ball={formation.ball}
-                      useSnapped={pitchLayer === 'board'}
-                      space={pitchLayer === 'space' ? tactics?.space ?? null : null}
-                      passing={pitchLayer === 'pass' ? tactics?.passing ?? null : null}
-                      offside={pitchLayer === 'offside' ? tactics?.offside?.teams ?? null : null}
+                      layer={pitchLayer}
+                      space={tactics?.space ?? null}
+                      passing={tactics?.passing ?? null}
+                      offside={tactics?.offside?.teams ?? null}
+                      pitch={formation.pitch}
                     />
                   </div>
                 )}
 
                 {boardTab !== 'photo' && (
-                  <div className="view-toggle" style={{ marginTop: 10 }} role="tablist" aria-label="レイヤー">
+                  <div className="view-toggle pitch-layer-toggle" style={{ marginTop: 10, flexWrap: 'wrap' }} role="tablist" aria-label="レイヤー">
                     <button className={pitchLayer === 'board' ? 'active' : ''} onClick={() => setPitchLayer('board')}>整形配置</button>
+                    <button className={pitchLayer === 'metrics' ? 'active' : ''} onClick={() => setPitchLayer('metrics')}>角度・距離</button>
                     <button className={pitchLayer === 'detected' ? 'active' : ''} onClick={() => setPitchLayer('detected')}>検出位置</button>
+                    <button className={pitchLayer === 'space' ? 'active' : ''} onClick={() => setPitchLayer('space')}>スペース</button>
                     <button className={pitchLayer === 'pass' ? 'active' : ''} onClick={() => setPitchLayer('pass')}>パス</button>
                     <button className={pitchLayer === 'offside' ? 'active' : ''} onClick={() => setPitchLayer('offside')}>ライン</button>
                   </div>

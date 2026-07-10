@@ -637,6 +637,22 @@ body {
   border-radius: 3px;
 }
 
+/* サーマルヒートマップの密度スケール凡例 */
+.thermal-bar {
+  display: inline-block;
+  width: 52px;
+  height: 10px;
+  border-radius: 3px;
+  background: linear-gradient(to right, #1e3a8a, #06b6d4, #22c55e, #eab308, #ef4444);
+}
+
+/* ボード内のチーム表示トグル */
+.pitch-team-toggle {
+  margin: 10px 0 2px;
+}
+.pitch-team-toggle button { padding: 5px 12px; font-size: 0.74rem; }
+.pitch-layer-toggle { gap: 0; }
+
 .chart-tooltip {
   position: absolute;
   pointer-events: none;

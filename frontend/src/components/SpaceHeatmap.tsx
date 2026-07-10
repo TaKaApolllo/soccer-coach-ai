@@ -1,4 +1,5 @@
 import { SpaceAnalysis } from '../types'
+import ThermalField from './ThermalField'
 
 interface SpaceHeatmapProps {
   space: SpaceAnalysis
@@ -6,46 +7,45 @@ interface SpaceHeatmapProps {
   teamBName?: string
 }
 
+const TEAM_HEX = ['#1cae77', '#3987e5']
+
 /**
- * スペース分析のコンパクトなヒートマップ（ダッシュボードカード用）
+ * スペース分析のサーマル（熱分布）ヒートマップ。
+ * control グリッドの絶対値を密度として青→赤の多段グラデ + ガウスぼかしで表現し、
+ * 支配チームは薄いチーム色ティントで区別する。
  */
 function SpaceHeatmap({ space, teamAName = 'チームA', teamBName = 'チームB' }: SpaceHeatmapProps) {
   const W = 300
   const H = 190
-  const cellW = W / space.grid_w
-  const cellH = H / space.grid_h
+  const m = 4
+  const fw = W - m * 2
+  const fh = H - m * 2
 
-  const cellColor = (v: number): string | null => {
-    if (Math.abs(v) < 0.1) return null
-    const alpha = Math.min(0.6, Math.abs(v) * 0.7)
-    return v > 0 ? `rgba(28, 174, 119, ${alpha})` : `rgba(230, 103, 103, ${alpha})`
-  }
+  const project = (nx: number, ny: number): [number, number] => [m + nx * fw, m + ny * fh]
 
   return (
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="スペース支配ヒートマップ" style={{ width: '100%', borderRadius: 10 }}>
         <rect x={0} y={0} width={W} height={H} rx={10} fill="#0d1f16" />
-        {space.control.map((row, gy) =>
-          row.map((v, gx) => {
-            const color = cellColor(v)
-            if (!color) return null
-            return (
-              <rect
-                key={`${gx}-${gy}`}
-                x={gx * cellW}
-                y={gy * cellH}
-                width={cellW + 0.5}
-                height={cellH + 0.5}
-                fill={color}
-              />
-            )
-          })
-        )}
+
+        <ThermalField
+          control={space.control}
+          gridW={space.grid_w}
+          gridH={space.grid_h}
+          project={project}
+          blur={(fw / space.grid_w) * 0.95}
+          teamAColor={TEAM_HEX[0]}
+          teamBColor={TEAM_HEX[1]}
+          idPrefix="card-thermal"
+          threshold={0.1}
+        />
+
         <g stroke="rgba(255,255,255,0.25)" strokeWidth={1} fill="none">
-          <rect x={4} y={4} width={W - 8} height={H - 8} rx={6} />
-          <line x1={W / 2} y1={4} x2={W / 2} y2={H - 4} />
+          <rect x={m} y={m} width={fw} height={fh} rx={6} />
+          <line x1={W / 2} y1={m} x2={W / 2} y2={H - m} />
           <circle cx={W / 2} cy={H / 2} r={22} />
         </g>
+
         {space.zones.map((z, i) => (
           <text
             key={i}
@@ -62,11 +62,15 @@ function SpaceHeatmap({ space, teamAName = 'チームA', teamBName = 'チームB
       </svg>
       <div className="chart-legend">
         <span className="legend-item">
-          <span className="legend-swatch" style={{ background: 'rgba(28,174,119,0.6)' }} />
+          <span className="thermal-bar" />
+          密度 低→高
+        </span>
+        <span className="legend-item">
+          <span className="legend-swatch" style={{ background: TEAM_HEX[0] }} />
           {teamAName}
         </span>
         <span className="legend-item">
-          <span className="legend-swatch" style={{ background: 'rgba(230,103,103,0.6)' }} />
+          <span className="legend-swatch" style={{ background: TEAM_HEX[1] }} />
           {teamBName}
         </span>
       </div>
