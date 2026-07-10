@@ -40,6 +40,31 @@ const CURRENT_LANDMARKS: PoseLandmark[] = [
   { name: 'right_foot_index', x: 0.93, y: 0.7, visibility: 1 }
 ]
 
+/**
+ * ヒーロー画像（実写級の選手写真）に重ねる用のプリセット骨格。
+ * 同梱イラスト / 生成画像は「サイドビューのインステップキック」を想定した
+ * 構図なので、画面全体（0-1）を基準に、その構図へ整列する固定ランドマークを
+ * 定義する。実測骨格ではなくオーバーレイ表現用の代表点。
+ * 構図: 選手は右向き、左足で踏み込み、右足を前方へ振り抜いてボールを捉える。
+ */
+export const HERO_PRESET_LANDMARKS: PoseLandmark[] = [
+  { name: 'nose', x: 0.46, y: 0.2, visibility: 1 },
+  { name: 'left_shoulder', x: 0.44, y: 0.31, visibility: 1 },
+  { name: 'right_shoulder', x: 0.51, y: 0.31, visibility: 1 },
+  { name: 'left_elbow', x: 0.37, y: 0.4, visibility: 1 },
+  { name: 'right_elbow', x: 0.58, y: 0.41, visibility: 1 },
+  { name: 'left_wrist', x: 0.31, y: 0.47, visibility: 1 },
+  { name: 'right_wrist', x: 0.64, y: 0.48, visibility: 1 },
+  { name: 'left_hip', x: 0.46, y: 0.53, visibility: 1 },
+  { name: 'right_hip', x: 0.51, y: 0.53, visibility: 1 },
+  { name: 'left_knee', x: 0.45, y: 0.69, visibility: 1 },
+  { name: 'right_knee', x: 0.59, y: 0.61, visibility: 1 },
+  { name: 'left_ankle', x: 0.44, y: 0.85, visibility: 1 },
+  { name: 'right_ankle', x: 0.71, y: 0.66, visibility: 1 },
+  { name: 'left_foot_index', x: 0.48, y: 0.89, visibility: 1 },
+  { name: 'right_foot_index', x: 0.77, y: 0.68, visibility: 1 }
+]
+
 const MOCK_ANGLE_ROWS: AngleRow[] = [
   { key: 'upper_lean', label: '上半身の傾き', current: 24, ideal: 12, unit: '°', status: 'bad' },
   { key: 'pelvis', label: '骨盤の傾き', current: 9, ideal: 4, unit: '°', status: 'warn' },

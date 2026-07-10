@@ -15,6 +15,13 @@ interface AvatarViewerProps {
   showGhost?: boolean
   /** 3D 風の傾き（擬似的な等角プロジェクション） */
   tilt?: boolean
+  /**
+   * フォトリアルなヒーロー画像の URL。指定時はベクターシルエットの代わりに
+   * この画像を背景いっぱい（object-fit: cover 相当）に表示し、上に骨格を重ねる。
+   */
+  backdropUrl?: string | null
+  /** ヒーロー画像モードで骨格オーバーレイを表示するか（トグル用） */
+  showSkeleton?: boolean
 }
 
 const W = 340
@@ -63,6 +70,8 @@ const JOINT_NAMES = [
   'right_knee', 'left_ankle', 'right_ankle', 'left_foot_index', 'right_foot_index'
 ]
 
+const NEON = '#39ff88'
+
 const TONE_COLOR: Record<Tone, string> = {
   good: '#39ff88',
   warn: '#facc15',
@@ -84,6 +93,17 @@ function buildJoints(lm: PoseLandmark[], tilt: boolean): Record<string, Pt> {
   return out
 }
 
+/** ヒーロー画像用: 正規化座標をビューポート全面（0-1 → W×H）にマップ */
+function buildJointsFull(lm: PoseLandmark[]): Record<string, Pt> {
+  const out: Record<string, Pt> = {}
+  for (const name of JOINT_NAMES) {
+    const p = lm.find((l) => l.name === name)
+    if (!p) continue
+    out[name] = [p.x * W, p.y * H]
+  }
+  return out
+}
+
 /**
  * スタジアム風背景 + ボリュームのある選手シルエット + ネオン骨格ラインの
  * 2D アバタービューア。props は将来の Three.js / React Three Fiber 実装へ
@@ -95,12 +115,110 @@ function AvatarViewer({
   highlightJoints = [],
   angleLabels = [],
   showGhost = true,
-  tilt = false
+  tilt = false,
+  backdropUrl = null,
+  showSkeleton = true
 }: AvatarViewerProps) {
   const active = landmarks && landmarks.length ? landmarks : IDEAL_LANDMARKS
 
   const joints = useMemo(() => buildJoints(active, tilt), [active, tilt])
   const ghost = useMemo(() => buildJoints(IDEAL_LANDMARKS, tilt), [tilt])
+  const fullJoints = useMemo(() => buildJointsFull(active), [active])
+
+  // ---- ヒーロー画像モード（フォトリアル背景 + 骨格オーバーレイ）----
+  if (backdropUrl) {
+    const highlightSet = new Set(highlightJoints)
+    return (
+      <div className="relative h-full w-full">
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" role="img" aria-label="選手ヒーロー画像とフォーム骨格" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <clipPath id="heroClip">
+              <rect x="0" y="0" width={W} height={H} rx="0" />
+            </clipPath>
+            <linearGradient id="heroFade" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="rgba(2,6,13,0.30)" />
+              <stop offset="42%" stopColor="rgba(2,6,13,0)" />
+              <stop offset="78%" stopColor="rgba(2,6,13,0.55)" />
+              <stop offset="100%" stopColor="rgba(2,6,13,0.92)" />
+            </linearGradient>
+            <filter id="heroNeon" x="-80%" y="-80%" width="260%" height="260%">
+              <feGaussianBlur stdDeviation="2.4" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
+          {/* フォトリアル背景（object-fit: cover 相当） */}
+          <image
+            href={backdropUrl}
+            x="0"
+            y="0"
+            width={W}
+            height={H}
+            preserveAspectRatio="xMidYMid slice"
+            clipPath="url(#heroClip)"
+          />
+          {/* HUD 視認性確保の暗めグラデーション */}
+          <rect x="0" y="0" width={W} height={H} fill="url(#heroFade)" />
+
+          {showSkeleton && (
+            <>
+              {/* 骨格ライン */}
+              <g stroke={NEON} strokeWidth="2.4" opacity="0.95" filter="url(#heroNeon)">
+                {SKELETON_LINKS.map(([a, b], i) => {
+                  const pa = fullJoints[a]
+                  const pb = fullJoints[b]
+                  if (!pa || !pb) return null
+                  return <line key={`hsk-${i}`} x1={pa[0]} y1={pa[1]} x2={pb[0]} y2={pb[1]} />
+                })}
+              </g>
+              {/* 関節点 */}
+              <g filter="url(#heroNeon)">
+                {Object.entries(fullJoints).map(([name, [x, y]]) => {
+                  const hot = highlightSet.has(name)
+                  return (
+                    <g key={name}>
+                      {hot && (
+                        <circle cx={x} cy={y} r={9} fill="none" stroke={NEON} strokeWidth="1.6" opacity="0.6">
+                          <animate attributeName="r" values="6;12;6" dur="1.8s" repeatCount="indefinite" />
+                          <animate attributeName="opacity" values="0.7;0;0.7" dur="1.8s" repeatCount="indefinite" />
+                        </circle>
+                      )}
+                      <circle cx={x} cy={y} r={hot ? 4.5 : name === 'nose' ? 3.6 : 3.2} fill={hot ? '#ffffff' : NEON} stroke={hot ? NEON : 'none'} strokeWidth="1.5" />
+                    </g>
+                  )
+                })}
+              </g>
+              {/* 角度ラベル */}
+              <g>
+                {angleLabels.map((al) => {
+                  const j = fullJoints[al.joint]
+                  if (!j) return null
+                  const color = TONE_COLOR[al.status ?? 'neutral']
+                  const lx = j[0] + (j[0] > W / 2 ? 14 : -14)
+                  const ly = j[1]
+                  const anchor = j[0] > W / 2 ? 'start' : 'end'
+                  const boxW = 52
+                  const boxX = anchor === 'start' ? lx : lx - boxW
+                  return (
+                    <g key={al.joint}>
+                      <line x1={j[0]} y1={j[1]} x2={lx} y2={ly} stroke={color} strokeWidth="1" opacity="0.6" />
+                      <rect x={boxX} y={ly - 10} width={boxW} height={20} rx="5" fill="rgba(2,6,13,0.82)" stroke={color} strokeWidth="1" />
+                      <text x={boxX + boxW / 2} y={ly + 1} textAnchor="middle" dominantBaseline="central" fontSize="9" fill={color} fontWeight="700">
+                        {al.label} {Math.round(al.value)}{al.unit ?? '°'}
+                      </text>
+                    </g>
+                  )
+                })}
+              </g>
+            </>
+          )}
+        </svg>
+      </div>
+    )
+  }
 
   const shoulderL = joints.left_shoulder
   const shoulderR = joints.right_shoulder
@@ -116,7 +234,6 @@ function AvatarViewer({
 
   const BODY_FILL = 'url(#bodyGrad)'
   const BODY_STROKE = 'rgba(150, 240, 190, 0.28)'
-  const NEON = '#39ff88'
 
   const highlight = new Set(highlightJoints)
 
