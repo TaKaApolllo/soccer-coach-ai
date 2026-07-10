@@ -42,6 +42,20 @@ const PAGE_CSS = `
 @media (prefers-reduced-motion: reduce) { .kpro-grow-bar, .kpro-reveal, .kpro-flash, .kpro-toast { animation: none; } }
 `
 
+/**
+ * 開封演出ラッパー。revealKey が変わったときだけ再マウントしてスタガード表示を
+ * 再生する（通常の再レンダーでは opacity 1 のまま = 内容が消えない）。
+ * ※ 必ずモジュールスコープに定義（描画関数内定義だと毎回別コンポーネント扱いに
+ *    なり再マウントが多発して内容がちらつく）。
+ */
+function Reveal({ revealKey, i, children }: { revealKey: number; i: number; children: ReactNode }) {
+  return (
+    <div key={`rv-${revealKey}-${i}`} className="kpro-reveal" style={{ animationDelay: `${i * 70}ms` }}>
+      {children}
+    </div>
+  )
+}
+
 /** 実 API のレスポンスをモックへ上書きマージするための共通ロジック */
 function mergePoseIntoData(prev: ProAnalysis, resp: PoseAnalysisResponse): ProAnalysis {
   const partial = proFromPoseResponse(resp)
@@ -266,13 +280,6 @@ function KickFormAnalysisPro() {
 
   const analyzeMode: 'dropzone' | 'progress' | null = analyzing ? 'progress' : showDropzone ? 'dropzone' : null
 
-  // 開封演出: revealKey 変化で主要セクションを再マウントして stagger 表示
-  const Reveal = ({ i, children }: { i: number; children: ReactNode }) => (
-    <div key={`rv-${revealKey}-${i}`} className="kpro-reveal" style={{ animationDelay: `${i * 70}ms` }}>
-      {children}
-    </div>
-  )
-
   return (
     <div className="relative">
       <style>{PAGE_CSS}</style>
@@ -311,7 +318,7 @@ function KickFormAnalysisPro() {
 
         {/* 中央メイン */}
         <div className="order-1 flex min-w-0 flex-col gap-4 lg:order-none">
-          <Reveal i={0}>
+          <Reveal revealKey={revealKey} i={0}>
             <MainFormViewer
               tab={tab}
               landmarks={data.landmarks}
@@ -343,25 +350,25 @@ function KickFormAnalysisPro() {
           {/* 改善ランキング + AIコーチ（モバイルではビューワー直下） */}
           <div className="order-1 grid grid-cols-1 gap-4 lg:order-none lg:grid-cols-2">
             <div ref={improvementRef} className="order-1 lg:order-none">
-              <Reveal i={1}>
+              <Reveal revealKey={revealKey} i={1}>
                 <ImprovementRankingCard items={data.improvements} activeJoint={focusJoint} onSelect={handleImprovementSelect} />
               </Reveal>
             </div>
             <div ref={coachRef} className="order-2 lg:order-none">
-              <Reveal i={2}>
+              <Reveal revealKey={revealKey} i={2}>
                 <AICoachCommentCard coach={data.coach} />
               </Reveal>
             </div>
           </div>
 
           <div className="order-2 lg:order-none">
-            <Reveal i={3}>
+            <Reveal revealKey={revealKey} i={3}>
               <MotionTimeline phases={data.phases} progress={progress} onSeek={(p) => setCurrentTime(p * duration)} />
             </Reveal>
           </div>
 
           <div className="order-3 lg:order-none">
-            <Reveal i={4}>
+            <Reveal revealKey={revealKey} i={4}>
               <IdealComparisonCard
                 items={data.comparisons}
                 baseline={baseline}
