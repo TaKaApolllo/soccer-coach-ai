@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PitchView from '../components/PitchView'
+import PassMiniMap from '../components/PassMiniMap'
 import PoseViewer from '../components/PoseViewer'
 import RadarChart from '../components/RadarChart'
 import ScoreRing from '../components/ScoreRing'
@@ -220,16 +221,29 @@ function AnalysisDashboardPage() {
             <div className="tactica-duo">
               <div className="card">
                 <h3 className="card-title">チーム構造</h3>
-                <div className="struct-rows">
-                  <div className="struct-row"><span>縦幅</span><strong>{focusTactics.depth_m}m</strong></div>
-                  <div className="struct-row"><span>横幅</span><strong>{focusTactics.width_m}m</strong></div>
-                  <div className="struct-row">
-                    <span>コンパクトネス</span>
-                    <strong className={focusTactics.compactness >= 60 ? 'accent-text' : 'warn-text'}>
-                      {focusTactics.compactness}/100
-                    </strong>
+                <div className="struct-bars">
+                  <div className="struct-bar">
+                    <div className="struct-bar-head"><span>縦幅</span><strong>{focusTactics.depth_m}m</strong></div>
+                    <div className="struct-bar-track">
+                      <div className="struct-bar-fill" style={{ width: `${Math.min(100, (focusTactics.depth_m / 105) * 100)}%`, background: 'var(--series-1)' }} />
+                    </div>
                   </div>
-                  <div className="struct-row">
+                  <div className="struct-bar">
+                    <div className="struct-bar-head"><span>横幅</span><strong>{focusTactics.width_m}m</strong></div>
+                    <div className="struct-bar-track">
+                      <div className="struct-bar-fill" style={{ width: `${Math.min(100, (focusTactics.width_m / 68) * 100)}%`, background: 'var(--series-2)' }} />
+                    </div>
+                  </div>
+                  <div className="struct-bar">
+                    <div className="struct-bar-head">
+                      <span>コンパクトネス</span>
+                      <strong className={focusTactics.compactness >= 60 ? 'accent-text' : 'warn-text'}>{focusTactics.compactness}/100</strong>
+                    </div>
+                    <div className="struct-bar-track">
+                      <div className="struct-bar-fill" style={{ width: `${Math.min(100, focusTactics.compactness)}%`, background: focusTactics.compactness >= 60 ? 'var(--accent)' : 'var(--series-3)' }} />
+                    </div>
+                  </div>
+                  <div className="struct-row" style={{ marginTop: 4 }}>
                     <span>ライン間距離</span>
                     <strong className={lineGapStatus === '良好' ? 'accent-text' : 'warn-text'}>{lineGapStatus}</strong>
                   </div>
@@ -277,23 +291,10 @@ function AnalysisDashboardPage() {
 
               <div className="card">
                 <h3 className="card-title">パスコース候補</h3>
-                {passCounts ? (
+                {tactics?.passing && passCounts ? (
                   <>
-                    <div className="struct-rows">
-                      <div className="struct-row">
-                        <span><span className="legend-swatch" style={{ background: 'var(--series-2)', display: 'inline-block', marginRight: 6 }} />安全</span>
-                        <strong>{passCounts.safe}本</strong>
-                      </div>
-                      <div className="struct-row">
-                        <span><span className="legend-swatch" style={{ background: 'var(--accent)', display: 'inline-block', marginRight: 6 }} />前進</span>
-                        <strong className="accent-text">{passCounts.progressive}本</strong>
-                      </div>
-                      <div className="struct-row">
-                        <span><span className="legend-swatch" style={{ background: 'var(--error-color)', display: 'inline-block', marginRight: 6 }} />リスク</span>
-                        <strong className="warn-text">{passCounts.risky}本</strong>
-                      </div>
-                    </div>
-                    <button className="btn btn-ghost btn-small" style={{ width: '100%', marginTop: 8 }} onClick={() => { setBoardTab('2d'); setPitchLayer('pass') }}>
+                    <PassMiniMap passing={tactics.passing} />
+                    <button className="btn btn-ghost btn-small" style={{ width: '100%', marginTop: 10 }} onClick={() => { setBoardTab('2d'); setPitchLayer('pass') }}>
                       ボードで確認
                     </button>
                   </>

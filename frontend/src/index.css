@@ -825,6 +825,30 @@ body {
 .accent-text { color: var(--accent) !important; }
 .warn-text { color: var(--series-3) !important; }
 
+/* チーム構造のプログレスバー */
+.struct-bars { display: flex; flex-direction: column; gap: 12px; }
+.struct-bar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin-bottom: 5px;
+}
+.struct-bar-head strong { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.struct-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.struct-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.5s ease;
+}
+
 /* 選手角度サマリー */
 .facing-row { display: flex; gap: 8px; }
 
