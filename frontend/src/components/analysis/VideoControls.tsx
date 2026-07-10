@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { btnReset } from './ui'
 
 interface VideoControlsProps {
@@ -8,6 +9,8 @@ interface VideoControlsProps {
   onSeek: (t: number) => void
   speed: number
   onSpeedChange: (s: number) => void
+  /** キーボードショートカットヒントを表示するか */
+  showHint?: boolean
 }
 
 const SPEEDS = [0.5, 1.0, 2.0]
@@ -20,19 +23,37 @@ function fmt(sec: number): string {
 
 /**
  * 再生 / 一時停止・時間表示・プログレスバー・再生速度の動画コントロール。
+ * プログレスバーはクリックシーク + ドラッグスクラブに対応。
  */
-function VideoControls({ playing, onTogglePlay, currentTime, duration, onSeek, speed, onSpeedChange }: VideoControlsProps) {
+function VideoControls({ playing, onTogglePlay, currentTime, duration, onSeek, speed, onSpeedChange, showHint }: VideoControlsProps) {
   const progress = duration > 0 ? currentTime / duration : 0
+  const barRef = useRef<HTMLDivElement>(null)
+  const dragging = useRef(false)
 
-  const handleBarClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect()
-    const p = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+  const seekFromClientX = (clientX: number) => {
+    const el = barRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const p = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
     onSeek(p * duration)
+  }
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragging.current = true
+    e.currentTarget.setPointerCapture(e.pointerId)
+    seekFromClientX(e.clientX)
+  }
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragging.current) seekFromClientX(e.clientX)
+  }
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragging.current = false
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* noop */ }
   }
 
   return (
     <div
-      className="pointer-events-auto flex items-center gap-3 rounded-xl px-3 py-2"
+      className="pointer-events-auto flex flex-col gap-1 rounded-xl px-3 py-2"
       style={{
         background: 'rgba(2, 8, 20, 0.7)',
         border: '1px solid rgba(148,163,184,0.2)',
@@ -40,6 +61,7 @@ function VideoControls({ playing, onTogglePlay, currentTime, duration, onSeek, s
         WebkitBackdropFilter: 'blur(16px)'
       }}
     >
+    <div className="flex items-center gap-3">
       <button
         type="button"
         data-testid="play-toggle"
@@ -70,8 +92,12 @@ function VideoControls({ playing, onTogglePlay, currentTime, duration, onSeek, s
       </span>
 
       <div
-        className="group relative h-5 min-w-0 flex-1 cursor-pointer"
-        onClick={handleBarClick}
+        ref={barRef}
+        data-testid="scrub-bar"
+        className="group relative h-5 min-w-0 flex-1 cursor-pointer touch-none select-none"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
         role="slider"
         aria-label="再生位置"
         aria-valuemin={0}
@@ -112,7 +138,25 @@ function VideoControls({ playing, onTogglePlay, currentTime, duration, onSeek, s
         ))}
       </div>
     </div>
+
+      {showHint && (
+        <div className="hidden items-center gap-2 pl-11 text-[9px] font-semibold tracking-wide text-slate-500 sm:flex">
+          <kbd style={kbd}>Space</kbd> 再生
+          <kbd style={kbd}>←</kbd><kbd style={kbd}>→</kbd> コマ送り
+          <kbd style={kbd}>1</kbd><kbd style={kbd}>2</kbd><kbd style={kbd}>3</kbd> 速度
+        </div>
+      )}
+    </div>
   )
 }
+
+const kbd = {
+  border: '1px solid rgba(148,163,184,0.3)',
+  borderRadius: 4,
+  padding: '0 4px',
+  background: 'rgba(2,6,17,0.6)',
+  color: 'rgba(203,213,225,0.85)',
+  fontFamily: 'ui-monospace, monospace'
+} as const
 
 export default VideoControls

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { PoseLandmark } from '../../types'
 import { AngleLabel, OverallScore } from '../../types/analysis'
+import { FaceMode } from '../../services/profile'
 import { HERO_PRESET_LANDMARKS } from '../../data/mockAnalysisData'
 import { api } from '../../services/api'
 import { ProTab } from './AnalysisHeader'
+import AnalyzePanel from './AnalyzePanel'
 import AvatarViewer from './AvatarViewer'
 import ScoreOverlayCard from './ScoreOverlayCard'
 import VideoControls from './VideoControls'
@@ -22,6 +24,21 @@ interface MainFormViewerProps {
   onSeek: (t: number) => void
   speed: number
   onSpeedChange: (s: number) => void
+  /** クロスハイライトのフォーカス関節 */
+  focusJoint?: string | null
+  /** 解析パネル制御: null なら非表示 */
+  analyzeMode?: 'dropzone' | 'progress' | null
+  faceMode?: FaceMode
+  onFaceModeChange?: (m: FaceMode) => void
+  onFile?: (file: File) => void
+  analyzeStepIndex?: number
+  analyzeError?: string | null
+  onDismissError?: () => void
+  /** 「＋新しい解析」ボタン（結果表示中に再解析を開始） */
+  onNewAnalysis?: () => void
+  /** 比較タブのゴースト不透明度ブレンド（0=自分のみ〜100=理想のみ） */
+  compareBlend?: number
+  onCompareBlendChange?: (v: number) => void
 }
 
 /** 外部の画像生成 AI（ChatGPT 等）に貼り付けるための推奨プロンプト（英文・固定） */
@@ -47,12 +64,26 @@ function MainFormViewer({
   duration,
   onSeek,
   speed,
-  onSpeedChange
+  onSpeedChange,
+  focusJoint = null,
+  analyzeMode = null,
+  faceMode = 'real',
+  onFaceModeChange,
+  onFile,
+  analyzeStepIndex = 0,
+  analyzeError,
+  onDismissError,
+  onNewAnalysis,
+  compareBlend = 45,
+  onCompareBlendChange
 }: MainFormViewerProps) {
   const showAngles = tab === 'angle' || tab === 'form'
   const showGhost = tab === 'compare'
   const is3d = tab === '3d'
   const skeletonOnly = tab === 'skeleton'
+  const blend = compareBlend / 100
+  const ghostOpacity = showGhost ? 0.2 + blend * 0.8 : 0.55
+  const bodyOpacity = showGhost ? 1 - blend * 0.9 : 1
 
   // ---- ヒーロー画像の状態 ----
   const [heroUrl, setHeroUrl] = useState<string | null>(null)
@@ -149,6 +180,9 @@ function MainFormViewer({
           tilt={is3d}
           backdropUrl={heroActive ? heroUrl : null}
           showSkeleton={showSkeleton}
+          focusJoint={focusJoint}
+          ghostOpacity={ghostOpacity}
+          bodyOpacity={bodyOpacity}
         />
       </div>
 
@@ -210,6 +244,28 @@ function MainFormViewer({
         </div>
       </div>
 
+      {/* 比較タブ: 不透明度スライダー（0=自分のみ〜100=理想のみ） */}
+      {showGhost && !heroActive && (
+        <div
+          className="pointer-events-auto absolute left-3 right-3 top-12 mx-auto flex max-w-xs items-center gap-2 rounded-xl px-3 py-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2"
+          style={{ background: 'rgba(2,8,20,0.72)', border: '1px solid rgba(148,163,184,0.2)', backdropFilter: 'blur(12px)' }}
+        >
+          <span className="shrink-0 text-[10px] font-bold text-emerald-300">自分</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={compareBlend}
+            data-testid="ghost-opacity"
+            onChange={(e) => onCompareBlendChange?.(Number(e.target.value))}
+            className="h-1 min-w-0 flex-1 cursor-pointer"
+            style={{ accentColor: '#39ff88' }}
+            aria-label="現在と理想の重ね合わせ不透明度"
+          />
+          <span className="shrink-0 text-[10px] font-bold" style={{ color: 'rgba(120,180,255,0.9)' }}>理想</span>
+        </div>
+      )}
+
       {/* 下部 HUD: 動画コントロール */}
       <div className="pointer-events-none absolute bottom-3 left-3 right-3">
         <VideoControls
@@ -220,8 +276,35 @@ function MainFormViewer({
           onSeek={onSeek}
           speed={speed}
           onSpeedChange={onSpeedChange}
+          showHint
         />
       </div>
+
+      {/* 「＋新しい解析」ボタン（結果表示中のみ） */}
+      {!analyzeMode && onNewAnalysis && (
+        <button
+          type="button"
+          data-testid="new-analysis"
+          onClick={onNewAnalysis}
+          className="absolute bottom-16 left-3 flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-bold shadow-lg transition-transform hover:scale-105"
+          style={{ background: 'rgba(2,6,17,0.85)', border: '1px solid rgba(57,255,136,0.4)', color: '#39ff88' }}
+        >
+          ＋新しい解析
+        </button>
+      )}
+
+      {/* 解析パネル（ドロップゾーン / 段階的プログレス） */}
+      {analyzeMode && onFile && onFaceModeChange && (
+        <AnalyzePanel
+          mode={analyzeMode}
+          faceMode={faceMode}
+          onFaceModeChange={onFaceModeChange}
+          onFile={onFile}
+          stepIndex={analyzeStepIndex}
+          error={analyzeError}
+          onDismissError={onDismissError}
+        />
+      )}
 
       {/* 右下: ヒーロー画像メニュー */}
       <div className="absolute bottom-16 right-3 flex flex-col items-end gap-2">
