@@ -232,10 +232,22 @@ function AvatarViewer({
   const headR = Math.max(16, shoulderWidth * 0.45)
   const headCenter: Pt | null = nose ? [nose[0], nose[1] - headR * 0.2] : null
 
-  const BODY_FILL = 'url(#bodyGrad)'
   const BODY_STROKE = 'rgba(150, 240, 190, 0.28)'
 
+  // 部位ごとの塗り分け（ユニフォーム / 肌 / ソックス / スパイク）
+  const limbFill = (a: string, b: string): string => {
+    if (b.endsWith('foot_index')) return 'url(#bootGrad)'
+    if (a.includes('knee') && b.includes('ankle')) return 'url(#sockGrad)'
+    if (a.includes('elbow') && b.includes('wrist')) return 'url(#skinGrad)'
+    return 'url(#uniGrad)' // 袖・ショーツ
+  }
+
   const highlight = new Set(highlightJoints)
+
+  // 接地している足元（影の中心）
+  const feet = [joints.left_foot_index, joints.right_foot_index, joints.left_ankle, joints.right_ankle].filter(Boolean) as Pt[]
+  const groundY = feet.length ? Math.max(...feet.map((p) => p[1])) : H - 60
+  const groundX = feet.length ? feet.reduce((s, p) => s + p[0], 0) / feet.length : W / 2
 
   return (
     <div className="relative h-full w-full">
@@ -254,6 +266,41 @@ function AvatarViewer({
             <stop offset="0%" stopColor="#33506b" />
             <stop offset="100%" stopColor="#1c2f42" />
           </linearGradient>
+          {/* ユニフォーム（ダークネイビー・立体シェーディング） */}
+          <linearGradient id="uniGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#2a3b63" />
+            <stop offset="48%" stopColor="#1b2749" />
+            <stop offset="100%" stopColor="#0f1830" />
+          </linearGradient>
+          {/* 肌トーン */}
+          <linearGradient id="skinGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#c69a76" />
+            <stop offset="100%" stopColor="#9c6f4e" />
+          </linearGradient>
+          {/* ソックス */}
+          <linearGradient id="sockGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#e7edf5" />
+            <stop offset="100%" stopColor="#9fb0c6" />
+          </linearGradient>
+          {/* スパイク（ブーツ） */}
+          <linearGradient id="bootGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#2c3242" />
+            <stop offset="100%" stopColor="#0b0e16" />
+          </linearGradient>
+          {/* 髪 */}
+          <linearGradient id="hairGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#3a3128" />
+            <stop offset="100%" stopColor="#171310" />
+          </linearGradient>
+          {/* 観客席のボケ帯 */}
+          <linearGradient id="standGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#0c2236" />
+            <stop offset="100%" stopColor="#050d18" />
+          </linearGradient>
+          <radialGradient id="shadowGrad" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="rgba(0,0,0,0.55)" />
+            <stop offset="100%" stopColor="rgba(0,0,0,0)" />
+          </radialGradient>
           <radialGradient id="lightGlowA" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="rgba(210,255,235,0.55)" />
             <stop offset="100%" stopColor="rgba(210,255,235,0)" />
@@ -280,8 +327,29 @@ function AvatarViewer({
 
         {/* スタジアム背景 */}
         <rect x="0" y="0" width={W} height={H} fill="url(#stadiumBg)" />
+        {/* 観客席（暗いボケ帯） */}
+        <rect x="0" y={H * 0.18} width={W} height={H * 0.24} fill="url(#standGrad)" opacity="0.9" />
+        <g opacity="0.5">
+          {Array.from({ length: 46 }).map((_, i) => {
+            const cx = ((i * 61) % (W - 12)) + 6
+            const row = Math.floor(i / 12)
+            const cy = H * 0.2 + row * 11 + ((i * 7) % 6)
+            const warm = i % 3 === 0
+            return (
+              <circle
+                key={`crowd-${i}`}
+                cx={cx}
+                cy={cy}
+                r={(i % 4) * 0.4 + 1}
+                fill={warm ? 'rgba(250,220,170,0.5)' : 'rgba(150,190,230,0.4)'}
+              />
+            )
+          })}
+        </g>
+        {/* フラッドライトの光暈 */}
         <circle cx={W * 0.16} cy={H * 0.1} r="80" fill="url(#lightGlowA)" filter="url(#softBlur)" />
         <circle cx={W * 0.86} cy={H * 0.06} r="95" fill="url(#lightGlowB)" filter="url(#softBlur)" />
+        <circle cx={W * 0.5} cy={H * 0.04} r="70" fill="url(#lightGlowA)" filter="url(#softBlur)" opacity="0.7" />
 
         {/* ピッチ */}
         <g opacity="0.85">
@@ -313,7 +381,10 @@ function AvatarViewer({
           </g>
         )}
 
-        {/* シルエットのリム */}
+        {/* 接地の影 */}
+        <ellipse cx={groundX} cy={groundY + 6} rx={shoulderWidth * 1.5} ry={14} fill="url(#shadowGrad)" opacity="0.7" />
+
+        {/* 選手のリム（輪郭） */}
         <g opacity="0.9">
           {LIMBS.map(([a, b, width], i) => {
             const pa = joints[a]
@@ -327,18 +398,59 @@ function AvatarViewer({
           {headCenter && <circle cx={headCenter[0]} cy={headCenter[1]} r={headR + 2} fill="none" stroke={BODY_STROKE} strokeWidth="3" />}
         </g>
 
-        {/* シルエット塗り */}
+        {/* 選手の塗り（部位ごとにユニフォーム / 肌 / ソックス / スパイク） */}
         <g>
+          {/* 胴（ユニフォーム） */}
+          {shoulderL && shoulderR && hipL && hipR && (
+            <polygon points={`${shoulderL.join(',')} ${shoulderR.join(',')} ${hipR.join(',')} ${hipL.join(',')}`} fill="url(#uniGrad)" />
+          )}
           {LIMBS.map(([a, b, width], i) => {
             const pa = joints[a]
             const pb = joints[b]
             if (!pa || !pb) return null
-            return <line key={`limb-${i}`} x1={pa[0]} y1={pa[1]} x2={pb[0]} y2={pb[1]} strokeWidth={width} stroke={BODY_FILL} strokeLinecap="round" />
+            return (
+              <line
+                key={`limb-${i}`}
+                x1={pa[0]}
+                y1={pa[1]}
+                x2={pb[0]}
+                y2={pb[1]}
+                strokeWidth={b.endsWith('foot_index') ? width + 3 : width}
+                stroke={limbFill(a, b)}
+                strokeLinecap={b.endsWith('foot_index') ? 'butt' : 'round'}
+              />
+            )
           })}
-          {shoulderL && shoulderR && hipL && hipR && (
-            <polygon points={`${shoulderL.join(',')} ${shoulderR.join(',')} ${hipR.join(',')} ${hipL.join(',')}`} fill={BODY_FILL} />
+          {/* 頭（肌 + 髪） */}
+          {headCenter && (
+            <>
+              <circle cx={headCenter[0]} cy={headCenter[1]} r={headR} fill="url(#skinGrad)" />
+              <path
+                d={`M ${headCenter[0] - headR} ${headCenter[1]} A ${headR} ${headR} 0 0 1 ${headCenter[0] + headR} ${headCenter[1]} L ${headCenter[0] + headR * 0.7} ${headCenter[1] - headR * 0.2} A ${headR * 0.9} ${headR * 0.9} 0 0 0 ${headCenter[0] - headR * 0.7} ${headCenter[1] - headR * 0.2} Z`}
+                fill="url(#hairGrad)"
+              />
+            </>
           )}
-          {headCenter && <circle cx={headCenter[0]} cy={headCenter[1]} r={headR} fill={BODY_FILL} />}
+        </g>
+
+        {/* リムライト（片側のエッジハイライト） */}
+        <g opacity="0.55" strokeLinecap="round">
+          {LIMBS.map(([a, b, width], i) => {
+            const pa = joints[a]
+            const pb = joints[b]
+            if (!pa || !pb) return null
+            return (
+              <line
+                key={`rl-${i}`}
+                x1={pa[0] - width * 0.28}
+                y1={pa[1]}
+                x2={pb[0] - width * 0.28}
+                y2={pb[1]}
+                strokeWidth={Math.max(1.5, width * 0.22)}
+                stroke="rgba(120,220,180,0.7)"
+              />
+            )
+          })}
         </g>
 
         {/* ネオン骨格ライン */}

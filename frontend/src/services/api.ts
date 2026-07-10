@@ -139,5 +139,57 @@ export const api = {
       { params: { months } }
     )
     return response.data
+  },
+
+  // ---------------------------------------------------------------
+  // ヒーロー画像（フォトリアルな選手ビジュアル）
+  // ---------------------------------------------------------------
+
+  /** ヒーロー画像の配信 URL。キャッシュ回避のため任意でバスターを付与 */
+  heroImageUrl(bust?: number | string): string {
+    return bust != null ? `${API_BASE}/hero-image?t=${bust}` : `${API_BASE}/hero-image`
+  },
+
+  /** 保存済みヒーロー画像があるか（GET が 200 なら true） */
+  async hasHeroImage(): Promise<boolean> {
+    try {
+      await axios.get(`${API_BASE}/hero-image`, { responseType: 'blob' })
+      return true
+    } catch {
+      return false
+    }
+  },
+
+  /** OpenAI でヒーロー画像を生成。未設定/失敗時は detail 付きで throw */
+  async generateHeroImage(): Promise<void> {
+    try {
+      await axios.post(`${API_BASE}/hero-image/generate`)
+    } catch (err) {
+      const detail = axios.isAxiosError(err)
+        ? (err.response?.data as { detail?: string } | undefined)?.detail
+        : undefined
+      throw new Error(detail ?? '画像生成に失敗しました')
+    }
+  },
+
+  /** 画像ファイルをヒーロー画像としてアップロード（上書き） */
+  async uploadHeroImage(file: File): Promise<void> {
+    const formData = new FormData()
+    formData.append('file', file)
+    try {
+      await axios.post(`${API_BASE}/hero-image`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+    } catch (err) {
+      const detail = axios.isAxiosError(err)
+        ? (err.response?.data as { detail?: string } | undefined)?.detail
+        : undefined
+      throw new Error(detail ?? 'アップロードに失敗しました')
+    }
+  },
+
+  /** ヒーロー画像を削除（デフォルトのイラストへ戻す） */
+  async deleteHeroImage(): Promise<void> {
+    await axios.delete(`${API_BASE}/hero-image`)
   }
 }
