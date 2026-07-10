@@ -5,6 +5,9 @@ interface IdealComparisonCardProps {
   items: ComparisonItem[]
   baseline: ComparisonBaseline
   onBaselineChange: (b: ComparisonBaseline) => void
+  activeJoint?: string | null
+  onHoverJoint?: (joint: string | null) => void
+  onSelectJoint?: (joint: string | null) => void
 }
 
 const BASELINES: { id: ComparisonBaseline; label: string }[] = [
@@ -35,20 +38,29 @@ function toneForGap(gap: number): Tone {
  * 各項目で基準値と現在値を横棒で比較し、差が小さいほど緑になる。
  * 基準は 理想 / プロ平均 / 前回平均 をセグメント UI で切り替え。
  */
-function IdealComparisonCard({ items, baseline, onBaselineChange }: IdealComparisonCardProps) {
+function IdealComparisonCard({ items, baseline, onBaselineChange, activeJoint, onHoverJoint, onSelectJoint }: IdealComparisonCardProps) {
   return (
     <Card
       title="理想フォームとの比較"
       action={<SegmentedControl options={BASELINES} value={baseline} onChange={onBaselineChange} size="sm" />}
     >
-      <ul className="m-0 list-none space-y-3 p-0" data-testid="comparison-list">
+      <ul className="m-0 list-none space-y-2 p-0" data-testid="comparison-list">
         {items.map((item) => {
           const base = baselineValue(item, baseline)
           const gap = item.current - base
           const tone = toneForGap(gap)
           const color = TONE_COLOR[tone]
+          const isActive = !!item.joint && item.joint === activeJoint
           return (
-            <li key={item.key}>
+            <li
+              key={item.key}
+              data-testid={`comparison-row-${item.key}`}
+              onMouseEnter={() => item.joint && onHoverJoint?.(item.joint)}
+              onMouseLeave={() => onHoverJoint?.(null)}
+              onClick={() => onSelectJoint?.(isActive ? null : item.joint ?? null)}
+              className="cursor-pointer rounded-lg px-2 py-1.5 transition-all"
+              style={{ background: isActive ? `${color}1a` : 'transparent', boxShadow: isActive ? `inset 0 0 0 1px ${color}55` : 'none' }}
+            >
               <div className="mb-1 flex items-baseline justify-between gap-2 text-xs">
                 <span className="text-slate-300">{item.label}</span>
                 <span className="whitespace-nowrap font-bold tabular-nums" style={{ color }}>

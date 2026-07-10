@@ -22,6 +22,12 @@ interface AvatarViewerProps {
   backdropUrl?: string | null
   /** ヒーロー画像モードで骨格オーバーレイを表示するか（トグル用） */
   showSkeleton?: boolean
+  /** クロスハイライトでフォーカスする関節。指定時は他をディムして一点を強調 */
+  focusJoint?: string | null
+  /** ゴースト（理想フォーム）の不透明度 0-1（比較スライダー用） */
+  ghostOpacity?: number
+  /** 自分の身体（塗り + 骨格）の不透明度 0-1（比較スライダー用） */
+  bodyOpacity?: number
 }
 
 const W = 340
@@ -117,7 +123,10 @@ function AvatarViewer({
   showGhost = true,
   tilt = false,
   backdropUrl = null,
-  showSkeleton = true
+  showSkeleton = true,
+  focusJoint = null,
+  ghostOpacity = 0.55,
+  bodyOpacity = 1
 }: AvatarViewerProps) {
   const active = landmarks && landmarks.length ? landmarks : IDEAL_LANDMARKS
 
@@ -127,7 +136,7 @@ function AvatarViewer({
 
   // ---- ヒーロー画像モード（フォトリアル背景 + 骨格オーバーレイ）----
   if (backdropUrl) {
-    const highlightSet = new Set(highlightJoints)
+    const highlightSet = new Set(focusJoint ? [...highlightJoints, focusJoint] : highlightJoints)
     return (
       <div className="relative h-full w-full">
         <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" role="img" aria-label="選手ヒーロー画像とフォーム骨格" preserveAspectRatio="xMidYMid meet">
@@ -178,9 +187,10 @@ function AvatarViewer({
               <g filter="url(#heroNeon)">
                 {Object.entries(fullJoints).map(([name, [x, y]]) => {
                   const hot = highlightSet.has(name)
+                  const dim = focusJoint && name !== focusJoint
                   return (
-                    <g key={name}>
-                      {hot && (
+                    <g key={name} opacity={dim ? 0.28 : 1}>
+                      {(hot || name === focusJoint) && (
                         <circle cx={x} cy={y} r={9} fill="none" stroke={NEON} strokeWidth="1.6" opacity="0.6">
                           <animate attributeName="r" values="6;12;6" dur="1.8s" repeatCount="indefinite" />
                           <animate attributeName="opacity" values="0.7;0;0.7" dur="1.8s" repeatCount="indefinite" />
@@ -197,15 +207,17 @@ function AvatarViewer({
                   const j = fullJoints[al.joint]
                   if (!j) return null
                   const color = TONE_COLOR[al.status ?? 'neutral']
+                  const lit = focusJoint === al.joint
+                  const dim = focusJoint && !lit
                   const lx = j[0] + (j[0] > W / 2 ? 14 : -14)
                   const ly = j[1]
                   const anchor = j[0] > W / 2 ? 'start' : 'end'
                   const boxW = 52
                   const boxX = anchor === 'start' ? lx : lx - boxW
                   return (
-                    <g key={al.joint}>
-                      <line x1={j[0]} y1={j[1]} x2={lx} y2={ly} stroke={color} strokeWidth="1" opacity="0.6" />
-                      <rect x={boxX} y={ly - 10} width={boxW} height={20} rx="5" fill="rgba(2,6,13,0.82)" stroke={color} strokeWidth="1" />
+                    <g key={al.joint} opacity={dim ? 0.25 : 1} style={lit ? { filter: `drop-shadow(0 0 6px ${color})` } : undefined}>
+                      <line x1={j[0]} y1={j[1]} x2={lx} y2={ly} stroke={color} strokeWidth={lit ? 1.6 : 1} opacity="0.6" />
+                      <rect x={boxX} y={ly - 10} width={boxW} height={20} rx="5" fill={lit ? 'rgba(2,6,13,0.95)' : 'rgba(2,6,13,0.82)'} stroke={color} strokeWidth={lit ? 1.8 : 1} />
                       <text x={boxX + boxW / 2} y={ly + 1} textAnchor="middle" dominantBaseline="central" fontSize="9" fill={color} fontWeight="700">
                         {al.label} {Math.round(al.value)}{al.unit ?? '°'}
                       </text>
@@ -242,7 +254,7 @@ function AvatarViewer({
     return 'url(#uniGrad)' // 袖・ショーツ
   }
 
-  const highlight = new Set(highlightJoints)
+  const highlight = new Set(focusJoint ? [...highlightJoints, focusJoint] : highlightJoints)
 
   // 接地している足元（影の中心）
   const feet = [joints.left_foot_index, joints.right_foot_index, joints.left_ankle, joints.right_ankle].filter(Boolean) as Pt[]
@@ -371,19 +383,25 @@ function AvatarViewer({
 
         {/* 理想フォームのゴースト */}
         {showGhost && (
-          <g stroke="rgba(120,180,255,0.5)" strokeWidth="1.6" strokeDasharray="4 4" opacity="0.55">
+          <g stroke="rgba(120,180,255,0.7)" strokeWidth="1.8" strokeDasharray="4 4" opacity={ghostOpacity}>
             {SKELETON_LINKS.map(([a, b], i) => {
               const pa = ghost[a]
               const pb = ghost[b]
               if (!pa || !pb) return null
               return <line key={`gh-${i}`} x1={pa[0]} y1={pa[1]} x2={pb[0]} y2={pb[1]} />
             })}
+            <g fill="rgba(150,200,255,0.9)">
+              {Object.values(ghost).map(([x, y], i) => (
+                <circle key={`ghd-${i}`} cx={x} cy={y} r={2.4} />
+              ))}
+            </g>
           </g>
         )}
 
         {/* 接地の影 */}
         <ellipse cx={groundX} cy={groundY + 6} rx={shoulderWidth * 1.5} ry={14} fill="url(#shadowGrad)" opacity="0.7" />
 
+        <g opacity={bodyOpacity} style={{ transition: 'opacity 0.15s ease' }}>
         {/* 選手のリム（輪郭） */}
         <g opacity="0.9">
           {LIMBS.map(([a, b, width], i) => {
@@ -467,8 +485,9 @@ function AvatarViewer({
         <g filter="url(#neonGlow)">
           {Object.entries(joints).map(([name, [x, y]]) => {
             const hot = highlight.has(name)
+            const dim = focusJoint && name !== focusJoint
             return (
-              <g key={name}>
+              <g key={name} opacity={dim ? 0.3 : 1}>
                 {hot && (
                   <circle cx={x} cy={y} r={9} fill="none" stroke={NEON} strokeWidth="1.6" opacity="0.6">
                     <animate attributeName="r" values="6;12;6" dur="1.8s" repeatCount="indefinite" />
@@ -487,21 +506,24 @@ function AvatarViewer({
             const j = joints[al.joint]
             if (!j) return null
             const color = TONE_COLOR[al.status ?? 'neutral']
+            const lit = focusJoint === al.joint
+            const dim = focusJoint && !lit
             const lx = j[0] + (j[0] > W / 2 ? 14 : -14)
             const ly = j[1]
             const anchor = j[0] > W / 2 ? 'start' : 'end'
             const boxW = 52
             const boxX = anchor === 'start' ? lx : lx - boxW
             return (
-              <g key={al.joint}>
-                <line x1={j[0]} y1={j[1]} x2={lx} y2={ly} stroke={color} strokeWidth="1" opacity="0.6" />
-                <rect x={boxX} y={ly - 10} width={boxW} height={20} rx="5" fill="rgba(2,6,13,0.82)" stroke={color} strokeWidth="1" />
+              <g key={al.joint} opacity={dim ? 0.22 : 1} style={lit ? { filter: `drop-shadow(0 0 6px ${color})` } : undefined}>
+                <line x1={j[0]} y1={j[1]} x2={lx} y2={ly} stroke={color} strokeWidth={lit ? 1.6 : 1} opacity="0.6" />
+                <rect x={boxX} y={ly - 10} width={boxW} height={20} rx="5" fill={lit ? 'rgba(2,6,13,0.95)' : 'rgba(2,6,13,0.82)'} stroke={color} strokeWidth={lit ? 1.8 : 1} />
                 <text x={boxX + boxW / 2} y={ly + 1} textAnchor="middle" dominantBaseline="central" fontSize="9" fill={color} fontWeight="700">
                   {al.label} {Math.round(al.value)}{al.unit ?? '°'}
                 </text>
               </g>
             )
           })}
+        </g>
         </g>
 
         {mode === '3d' && (
