@@ -39,6 +39,8 @@ export interface AngleRow {
   unit: string
   /** 現在値が理想からどれくらいズレているかで決まる評価 */
   status: Tone
+  /** クロスハイライト用: この角度に対応する landmark 名 */
+  joint?: string
 }
 
 /** サイドバーのショット情報 */
@@ -85,6 +87,8 @@ export interface ComparisonItem {
   pro: number
   previous: number
   unit: string
+  /** クロスハイライト用: 対応する landmark 名 */
+  joint?: string
 }
 
 export interface SkillRadar {
@@ -141,6 +145,20 @@ export interface ImprovementItem {
   /** 改善で見込めるスコア上昇（点） */
   delta: number
   tone: Tone
+  /** クロスハイライト用: 対応する landmark 名 */
+  joint?: string
+}
+
+/** サマリーストリップ用のジャンプ先 */
+export type InsightTarget = 'coach' | 'improvements' | 'recommendations'
+
+/** インサイトサマリー（一瞬で要点を掴むための 3 チップ + 総合スコア） */
+export interface InsightSummary {
+  score: number
+  max: number
+  best: { label: string; joint?: string; target: InsightTarget }
+  priority: { label: string; joint?: string; target: InsightTarget }
+  next: { label: string; joint?: string; target: InsightTarget }
 }
 
 export interface ScoreChip {
@@ -195,6 +213,23 @@ function toneFromStatus(status: string): Tone {
   return 'neutral'
 }
 
+/**
+ * 角度キー / ラベルから、AvatarViewer 上でハイライトする landmark 名を推定する。
+ * 実データはキーが多様なため、日本語ラベル・英語キーの双方を語句で判定する。
+ */
+export function resolveJoint(text: string): string | undefined {
+  const t = text.toLowerCase()
+  if (/フォロー|follow|振り抜|swing_through/.test(t)) return 'right_ankle'
+  if (/足首|ankle|ミート/.test(t)) return 'right_ankle'
+  if (/膝|knee/.test(t)) return 'right_knee'
+  if (/振り上げ|backswing|takeback|テイクバック|蹴り脚|kick/.test(t)) return 'right_hip'
+  if (/骨盤|pelvis|腰|hip/.test(t)) return 'right_hip'
+  if (/支持脚|軸足|plant|stand/.test(t)) return 'left_knee'
+  if (/上半身|上体|体幹|姿勢|lean|trunk|torso|傾き/.test(t)) return 'left_shoulder'
+  if (/バランス|balance|安定|stability/.test(t)) return 'left_hip'
+  return undefined
+}
+
 /** KeyAngle[] → AngleRow[] */
 export function anglesFromKeyAngles(keyAngles: KeyAngle[]): AngleRow[] {
   return keyAngles.map((k) => ({
@@ -203,7 +238,8 @@ export function anglesFromKeyAngles(keyAngles: KeyAngle[]): AngleRow[] {
     current: Math.round(k.value),
     ideal: Math.round(k.ideal),
     unit: '°',
-    status: toneFromDelta(k.value - k.ideal)
+    status: toneFromDelta(k.value - k.ideal),
+    joint: resolveJoint(`${k.key} ${k.label}`)
   }))
 }
 
@@ -246,8 +282,46 @@ export function improvementsFromRankings(rankings: ImprovementRanking[]): Improv
     advice: r.advice,
     // 改善効果はズレの大きさから概算（3〜10 点）
     delta: Math.max(3, Math.min(10, Math.round(r.delta_deg / 4))),
-    tone: r.severity === 'high' ? 'bad' : r.severity === 'mid' ? 'warn' : 'good'
+    tone: r.severity === 'high' ? 'bad' : r.severity === 'mid' ? 'warn' : 'good',
+    joint: resolveJoint(`${r.part} ${r.label} ${r.issue}`)
   }))
+}
+
+/**
+ * 画面全体のデータから「一瞬で理解」用のサマリーを導出する。
+ * ・最も良い点: good 判定の角度で理想に最も近いもの（無ければ overall の chip）
+ * ・最優先の改善: 改善ランキング 1 位（無ければ最も悪い角度）
+ * ・次にやること: おすすめ練習の先頭
+ */
+export function deriveInsights(data: ProAnalysis): InsightSummary {
+  const goods = data.angles.filter((a) => a.status === 'good')
+  const best = goods.length
+    ? goods.reduce((a, b) => (Math.abs(a.current - a.ideal) <= Math.abs(b.current - b.ideal) ? a : b))
+    : null
+  const worst = [...data.angles].sort((a, b) => Math.abs(b.current - b.ideal) - Math.abs(a.current - a.ideal))[0]
+
+  const topImprovement = data.improvements[0]
+  const topRec = data.recommendations[0]
+
+  return {
+    score: data.overall.score,
+    max: data.overall.max,
+    best: {
+      label: best ? best.label : data.overall.chips[0]?.label ?? '安定したフォーム',
+      joint: best?.joint,
+      target: 'coach'
+    },
+    priority: {
+      label: topImprovement ? topImprovement.label : worst?.label ?? 'フォロースルー',
+      joint: topImprovement?.joint ?? worst?.joint,
+      target: 'improvements'
+    },
+    next: {
+      label: topRec ? topRec.title : '基礎ドリル',
+      joint: undefined,
+      target: 'recommendations'
+    }
+  }
 }
 
 /** BodyPartScores → メトリクスの一部やコーチコメント素材として使えるように整形 */

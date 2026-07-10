@@ -66,13 +66,13 @@ export const HERO_PRESET_LANDMARKS: PoseLandmark[] = [
 ]
 
 const MOCK_ANGLE_ROWS: AngleRow[] = [
-  { key: 'upper_lean', label: '上半身の傾き', current: 24, ideal: 12, unit: '°', status: 'bad' },
-  { key: 'pelvis', label: '骨盤の傾き', current: 9, ideal: 4, unit: '°', status: 'warn' },
-  { key: 'plant_leg', label: '支持脚角度', current: 168, ideal: 170, unit: '°', status: 'good' },
-  { key: 'kick_backswing', label: '蹴り脚の振り上げ', current: 118, ideal: 135, unit: '°', status: 'warn' },
-  { key: 'knee', label: '膝角度', current: 148, ideal: 158, unit: '°', status: 'warn' },
-  { key: 'ankle', label: '足首角度', current: 122, ideal: 128, unit: '°', status: 'good' },
-  { key: 'follow_through', label: 'フォロースルー角度', current: 96, ideal: 120, unit: '°', status: 'bad' }
+  { key: 'upper_lean', label: '上半身の傾き', current: 24, ideal: 12, unit: '°', status: 'bad', joint: 'left_shoulder' },
+  { key: 'pelvis', label: '骨盤の傾き', current: 9, ideal: 4, unit: '°', status: 'warn', joint: 'right_hip' },
+  { key: 'plant_leg', label: '支持脚角度', current: 168, ideal: 170, unit: '°', status: 'good', joint: 'left_knee' },
+  { key: 'kick_backswing', label: '蹴り脚の振り上げ', current: 118, ideal: 135, unit: '°', status: 'warn', joint: 'right_hip' },
+  { key: 'knee', label: '膝角度', current: 148, ideal: 158, unit: '°', status: 'warn', joint: 'right_knee' },
+  { key: 'ankle', label: '足首角度', current: 122, ideal: 128, unit: '°', status: 'good', joint: 'right_ankle' },
+  { key: 'follow_through', label: 'フォロースルー角度', current: 96, ideal: 120, unit: '°', status: 'bad', joint: 'right_ankle' }
 ]
 
 const MOCK_ANGLE_LABELS: AngleLabel[] = [
@@ -120,11 +120,11 @@ const MOCK_PHASES: MotionPhase[] = [
 ]
 
 const MOCK_COMPARISONS: ComparisonItem[] = [
-  { key: 'plant_dist', label: '軸足の位置', current: 74, ideal: 90, pro: 94, previous: 70, unit: '%' },
-  { key: 'backswing', label: '振り上げの深さ', current: 62, ideal: 85, pro: 91, previous: 58, unit: '%' },
-  { key: 'impact_timing', label: 'インパクト精度', current: 88, ideal: 92, pro: 96, previous: 83, unit: '%' },
-  { key: 'follow', label: 'フォロースルー', current: 55, ideal: 88, pro: 93, previous: 60, unit: '%' },
-  { key: 'balance', label: '体幹の安定', current: 79, ideal: 90, pro: 95, previous: 74, unit: '%' }
+  { key: 'plant_dist', label: '軸足の位置', current: 74, ideal: 90, pro: 94, previous: 70, unit: '%', joint: 'left_knee' },
+  { key: 'backswing', label: '振り上げの深さ', current: 62, ideal: 85, pro: 91, previous: 58, unit: '%', joint: 'right_hip' },
+  { key: 'impact_timing', label: 'インパクト精度', current: 88, ideal: 92, pro: 96, previous: 83, unit: '%', joint: 'right_ankle' },
+  { key: 'follow', label: 'フォロースルー', current: 55, ideal: 88, pro: 93, previous: 60, unit: '%', joint: 'right_ankle' },
+  { key: 'balance', label: '体幹の安定', current: 79, ideal: 90, pro: 95, previous: 74, unit: '%', joint: 'left_shoulder' }
 ]
 
 const MOCK_RADAR: SkillRadar = {
@@ -170,9 +170,9 @@ const MOCK_COACH: CoachComment = {
 }
 
 const MOCK_IMPROVEMENTS: ImprovementItem[] = [
-  { rank: 1, label: 'フォロースルー', issue: '蹴り足が外へ流れる', advice: 'つま先を目標へ送り切る', delta: 6, tone: 'bad' },
-  { rank: 2, label: '骨盤の開き', issue: '開きが早く力が逃げる', advice: 'インパクトまで開きを我慢', delta: 4, tone: 'warn' },
-  { rank: 3, label: '足首の固定', issue: 'ミート時に緩む', advice: '足首をロックして当てる', delta: 3, tone: 'good' }
+  { rank: 1, label: 'フォロースルー', issue: '蹴り足が外へ流れる', advice: 'つま先を目標へ送り切る', delta: 6, tone: 'bad', joint: 'right_ankle' },
+  { rank: 2, label: '骨盤の開き', issue: '開きが早く力が逃げる', advice: 'インパクトまで開きを我慢', delta: 4, tone: 'warn', joint: 'right_hip' },
+  { rank: 3, label: '足首の固定', issue: 'ミート時に緩む', advice: '足首をロックして当てる', delta: 3, tone: 'good', joint: 'right_ankle' }
 ]
 
 /** 画面全体を成立させる完全モック。実データがあれば proFromPoseResponse で上書き。 */
