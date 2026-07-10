@@ -36,6 +36,29 @@ FORMATION_TEMPLATES = {
 
 ROLE_BY_LINE = {0: "DF", 1: "MF", 2: "FW", 3: "FW"}
 
+# ロール別の標準背番号（優先順）。同ロールが複数いる場合はリスト先頭から順に割当。
+# 割当先が尽きた/該当ロールがない選手は 12 以降を昇順で補完する。
+ROLE_JERSEY_PREFS = {
+    "GK": [1],
+    "RB": [2],
+    "LB": [3],
+    "CB": [4, 5],
+    "CM": [6, 8, 10],   # 中盤中央（3枚なら 6/8/10 = アンカー/インサイド/トップ下相当）
+    "AM": [10],
+    "RM": [7],
+    "LM": [11],
+    "RW": [7],
+    "LW": [11],
+    "CF": [9],
+    # 左右不明の総称ロール（フォールバック）
+    "SB": [2, 3],
+    "SH": [7, 11],
+    "WG": [7, 11],
+    "DF": [4, 5],
+    "MF": [6, 8],
+    "FW": [9],
+}
+
 
 @dataclass
 class FormationPlayer:
@@ -49,6 +72,7 @@ class FormationPlayer:
     raw_y: float = 0.0              # ボール・パス候補・オフサイドラインと同じ座標系
     snapped_x: float = 0.0          # テンプレート整形後の配置座標
     snapped_y: float = 0.0
+    jersey_number: int = 0          # ロールに応じて割り当てた標準背番号（チーム内で一意）
 
 
 @dataclass
@@ -138,6 +162,7 @@ class FormationAnalyzer:
         tf.confidence = confidence
 
         self._assign_roles_and_snap(line_groups, formation)
+        self._assign_jersey_numbers(players)
 
         tf.players = players
         return tf
@@ -276,14 +301,58 @@ class FormationAnalyzer:
 
     @staticmethod
     def _detailed_role(base_role: str, pos_in_line: int, line_size: int) -> str:
-        """ライン内の位置（タッチライン側か中央か）から詳細ロールを推定"""
+        """ライン内の位置（タッチライン側か中央か）から詳細ロールを左右つきで推定
+
+        pos_in_line はライン内を snapped_y 昇順（＝攻撃方向で正規化した座標系）で
+        並べた順位。攻撃方向を左→右に正規化してあるため、
+        小さい y（pos_in_line == 0）が「左サイド」、大きい y が「右サイド」に対応する。
+        """
         if base_role not in ("DF", "MF", "FW") or line_size <= 1:
             return {"DF": "CB", "MF": "CM", "FW": "CF"}.get(base_role, base_role)
 
-        is_wide = pos_in_line == 0 or pos_in_line == line_size - 1
+        is_left = pos_in_line == 0
+        is_right = pos_in_line == line_size - 1
+        is_wide = is_left or is_right
         if base_role == "DF":
-            return "SB" if (is_wide and line_size >= 4) else "CB"
+            if is_wide and line_size >= 4:
+                return "LB" if is_left else "RB"
+            return "CB"
         if base_role == "MF":
-            return "SH" if (is_wide and line_size >= 4) else "CM"
+            if is_wide and line_size >= 4:
+                return "LM" if is_left else "RM"
+            return "CM"
         # FW
-        return "WG" if (is_wide and line_size >= 3) else "CF"
+        if is_wide and line_size >= 3:
+            return "LW" if is_left else "RW"
+        return "CF"
+
+    def _assign_jersey_numbers(self, players: List[FormationPlayer]) -> None:
+        """ロールに応じた標準背番号をチーム内で一意に割り当てる
+
+        1) GK→後方DF→中盤→前線の順（snapped_x 昇順、同深さは snapped_y 昇順）で走査し、
+           各ロールの優先番号のうち未使用の先頭を割り当てる
+        2) 優先番号が尽きた/該当ロールがない選手は 12 以降の空き番号を昇順で補完
+        """
+        used: set = set()
+        # GK（line == -1）を先頭に、以降は後方から前方・左から右の順で決定論的に処理
+        ordered = sorted(
+            players,
+            key=lambda p: (0 if p.is_goalkeeper else 1, p.snapped_x, p.snapped_y),
+        )
+        deferred: List[FormationPlayer] = []
+        for pl in ordered:
+            prefs = ROLE_JERSEY_PREFS.get(pl.role, [])
+            chosen = next((n for n in prefs if n not in used), None)
+            if chosen is None:
+                deferred.append(pl)
+                continue
+            pl.jersey_number = chosen
+            used.add(chosen)
+
+        # フォールバック: 12 以降の空き番号を昇順で補完
+        for pl in deferred:
+            n = 12
+            while n in used:
+                n += 1
+            pl.jersey_number = n
+            used.add(n)
