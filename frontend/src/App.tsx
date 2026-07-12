@@ -4,6 +4,7 @@ import BottomNav from './components/BottomNav'
 import DashboardPage from './pages/DashboardPage'
 import AnalysisDashboardPage from './pages/AnalysisDashboardPage'
 import KickAnalysisPage from './pages/KickAnalysisPage'
+import KickFormAnalysisPro from './pages/KickFormAnalysisPro'
 import FormAnalysisPage from './pages/FormAnalysisPage'
 import GrowthPage from './pages/GrowthPage'
 import DrillsPage from './pages/DrillsPage'
@@ -18,6 +19,7 @@ function App() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/analysis" element={<AnalysisDashboardPage />} />
           <Route path="/kick" element={<KickAnalysisPage />} />
+          <Route path="/kick-pro" element={<KickFormAnalysisPro />} />
           <Route path="/form-analysis" element={<FormAnalysisPage />} />
           <Route path="/formation" element={<Navigate to="/analysis" replace />} />
           <Route path="/growth" element={<GrowthPage />} />

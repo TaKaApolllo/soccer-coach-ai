@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from app import db
-from app.routers import analysis, formation, growth, pose
+from app.routers import analysis, formation, growth, hero, pose
 
 app = FastAPI(
     title="Soccer Coach AI",
@@ -36,6 +36,7 @@ app.include_router(analysis.router, prefix="/api", tags=["analysis"])
 app.include_router(pose.router, prefix="/api", tags=["pose"])
 app.include_router(formation.router, prefix="/api", tags=["formation"])
 app.include_router(growth.router, prefix="/api", tags=["growth"])
+app.include_router(hero.router, prefix="/api", tags=["hero"])
 
 
 @app.get("/")

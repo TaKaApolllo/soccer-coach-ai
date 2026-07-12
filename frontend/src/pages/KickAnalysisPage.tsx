@@ -155,9 +155,16 @@ function KickAnalysisPage() {
           ))}
         </div>
         <Link
+          to="/kick-pro"
+          className="btn btn-ghost btn-small"
+          style={{ marginLeft: 'auto', textDecoration: 'none', color: 'var(--accent)' }}
+        >
+          ⚡ Pro分析
+        </Link>
+        <Link
           to="/form-analysis"
           className="btn btn-ghost btn-small"
-          style={{ marginLeft: 'auto', textDecoration: 'none' }}
+          style={{ textDecoration: 'none' }}
         >
           ✨ フォーム分析
         </Link>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PitchView from '../components/PitchView'
+import PassMiniMap from '../components/PassMiniMap'
 import PoseViewer from '../components/PoseViewer'
 import RadarChart from '../components/RadarChart'
 import ScoreRing from '../components/ScoreRing'
@@ -20,7 +21,7 @@ import {
 } from '../types'
 
 type BoardTab = '2d' | 'photo' | '3d'
-type PitchLayer = 'board' | 'detected' | 'space' | 'pass' | 'offside'
+type PitchLayer = 'board' | 'metrics' | 'detected' | 'space' | 'pass' | 'offside'
 
 const LEVEL_TABS: { id: CoachLevel; label: string }[] = [
   { id: 'beginner', label: '初心者' },
@@ -193,18 +194,21 @@ function AnalysisDashboardPage() {
                     <PitchView
                       teams={formation.teams}
                       ball={formation.ball}
-                      useSnapped={pitchLayer === 'board'}
-                      space={pitchLayer === 'space' ? tactics?.space ?? null : null}
-                      passing={pitchLayer === 'pass' ? tactics?.passing ?? null : null}
-                      offside={pitchLayer === 'offside' ? tactics?.offside?.teams ?? null : null}
+                      layer={pitchLayer}
+                      space={tactics?.space ?? null}
+                      passing={tactics?.passing ?? null}
+                      offside={tactics?.offside?.teams ?? null}
+                      pitch={formation.pitch}
                     />
                   </div>
                 )}
 
                 {boardTab !== 'photo' && (
-                  <div className="view-toggle" style={{ marginTop: 10 }} role="tablist" aria-label="レイヤー">
+                  <div className="view-toggle pitch-layer-toggle" style={{ marginTop: 10, flexWrap: 'wrap' }} role="tablist" aria-label="レイヤー">
                     <button className={pitchLayer === 'board' ? 'active' : ''} onClick={() => setPitchLayer('board')}>整形配置</button>
+                    <button className={pitchLayer === 'metrics' ? 'active' : ''} onClick={() => setPitchLayer('metrics')}>角度・距離</button>
                     <button className={pitchLayer === 'detected' ? 'active' : ''} onClick={() => setPitchLayer('detected')}>検出位置</button>
+                    <button className={pitchLayer === 'space' ? 'active' : ''} onClick={() => setPitchLayer('space')}>スペース</button>
                     <button className={pitchLayer === 'pass' ? 'active' : ''} onClick={() => setPitchLayer('pass')}>パス</button>
                     <button className={pitchLayer === 'offside' ? 'active' : ''} onClick={() => setPitchLayer('offside')}>ライン</button>
                   </div>
@@ -217,16 +221,29 @@ function AnalysisDashboardPage() {
             <div className="tactica-duo">
               <div className="card">
                 <h3 className="card-title">チーム構造</h3>
-                <div className="struct-rows">
-                  <div className="struct-row"><span>縦幅</span><strong>{focusTactics.depth_m}m</strong></div>
-                  <div className="struct-row"><span>横幅</span><strong>{focusTactics.width_m}m</strong></div>
-                  <div className="struct-row">
-                    <span>コンパクトネス</span>
-                    <strong className={focusTactics.compactness >= 60 ? 'accent-text' : 'warn-text'}>
-                      {focusTactics.compactness}/100
-                    </strong>
+                <div className="struct-bars">
+                  <div className="struct-bar">
+                    <div className="struct-bar-head"><span>縦幅</span><strong>{focusTactics.depth_m}m</strong></div>
+                    <div className="struct-bar-track">
+                      <div className="struct-bar-fill" style={{ width: `${Math.min(100, (focusTactics.depth_m / 105) * 100)}%`, background: 'var(--series-1)' }} />
+                    </div>
                   </div>
-                  <div className="struct-row">
+                  <div className="struct-bar">
+                    <div className="struct-bar-head"><span>横幅</span><strong>{focusTactics.width_m}m</strong></div>
+                    <div className="struct-bar-track">
+                      <div className="struct-bar-fill" style={{ width: `${Math.min(100, (focusTactics.width_m / 68) * 100)}%`, background: 'var(--series-2)' }} />
+                    </div>
+                  </div>
+                  <div className="struct-bar">
+                    <div className="struct-bar-head">
+                      <span>コンパクトネス</span>
+                      <strong className={focusTactics.compactness >= 60 ? 'accent-text' : 'warn-text'}>{focusTactics.compactness}/100</strong>
+                    </div>
+                    <div className="struct-bar-track">
+                      <div className="struct-bar-fill" style={{ width: `${Math.min(100, focusTactics.compactness)}%`, background: focusTactics.compactness >= 60 ? 'var(--accent)' : 'var(--series-3)' }} />
+                    </div>
+                  </div>
+                  <div className="struct-row" style={{ marginTop: 4 }}>
                     <span>ライン間距離</span>
                     <strong className={lineGapStatus === '良好' ? 'accent-text' : 'warn-text'}>{lineGapStatus}</strong>
                   </div>
@@ -274,23 +291,10 @@ function AnalysisDashboardPage() {
 
               <div className="card">
                 <h3 className="card-title">パスコース候補</h3>
-                {passCounts ? (
+                {tactics?.passing && passCounts ? (
                   <>
-                    <div className="struct-rows">
-                      <div className="struct-row">
-                        <span><span className="legend-swatch" style={{ background: 'var(--series-2)', display: 'inline-block', marginRight: 6 }} />安全</span>
-                        <strong>{passCounts.safe}本</strong>
-                      </div>
-                      <div className="struct-row">
-                        <span><span className="legend-swatch" style={{ background: 'var(--accent)', display: 'inline-block', marginRight: 6 }} />前進</span>
-                        <strong className="accent-text">{passCounts.progressive}本</strong>
-                      </div>
-                      <div className="struct-row">
-                        <span><span className="legend-swatch" style={{ background: 'var(--error-color)', display: 'inline-block', marginRight: 6 }} />リスク</span>
-                        <strong className="warn-text">{passCounts.risky}本</strong>
-                      </div>
-                    </div>
-                    <button className="btn btn-ghost btn-small" style={{ width: '100%', marginTop: 8 }} onClick={() => { setBoardTab('2d'); setPitchLayer('pass') }}>
+                    <PassMiniMap passing={tactics.passing} />
+                    <button className="btn btn-ghost btn-small" style={{ width: '100%', marginTop: 10 }} onClick={() => { setBoardTab('2d'); setPitchLayer('pass') }}>
                       ボードで確認
                     </button>
                   </>
@@ -307,6 +311,7 @@ function AnalysisDashboardPage() {
           <div className="card">
             <h3 className="card-title">
               キックフォーム分析
+              <Link to="/kick-pro" className="title-link" style={{ marginRight: 10, color: 'var(--accent)' }}>Pro分析 ›</Link>
               <Link to="/form-analysis" className="title-link" style={{ marginRight: 10 }}>フォーム分析 ›</Link>
               <Link to="/kick" className="title-link">詳細分析を開く ›</Link>
             </h3>

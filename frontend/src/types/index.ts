@@ -173,6 +173,8 @@ export interface PoseAnalysisResponse {
 export interface FormationPlayer {
   index: number
   role: string
+  /** ロールに応じた標準背番号（チーム内で一意）。旧データには無い場合がある */
+  jersey_number?: number
   is_goalkeeper: boolean
   detected_x: number
   detected_y: number

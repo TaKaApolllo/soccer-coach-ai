@@ -361,6 +361,7 @@ async def analyze_formation(
                 {
                     "index": pl.index,
                     "role": pl.role,
+                    "jersey_number": pl.jersey_number,
                     "is_goalkeeper": pl.is_goalkeeper,
                     "detected_x": round(pl.raw_x, 3),
                     "detected_y": round(pl.raw_y, 3),
