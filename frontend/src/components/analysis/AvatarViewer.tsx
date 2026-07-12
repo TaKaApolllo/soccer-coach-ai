@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { PoseLandmark } from '../../types'
 import { AngleLabel, AvatarMode, Tone } from '../../types/analysis'
-import { IDEAL_LANDMARKS } from '../../mocks/formAnalysisMock'
+import { IDEAL_LANDMARKS } from '../../constants/idealForm'
 
 interface AvatarViewerProps {
   landmarks?: PoseLandmark[] | null

@@ -1,4 +1,4 @@
-import { BodyPartScores, CenterOfGravity, ImprovementRanking, PoseLandmark } from '../types'
+import { BodyPartScores, CenterOfGravity, ImprovementRanking } from '../types'
 
 /**
  * バックエンドの /form-analysis 系エンドポイントが実装されるまでの
@@ -88,21 +88,9 @@ export const IDEAL_ANGLES: Record<string, { label: string; ideal: number }> = {
   arm: { label: '腕の開き', ideal: 145 }
 }
 
-/** 理想フォームのデフォルト骨格（正規化座標 0-1、MediaPipe Pose準拠の代表点） */
-export const IDEAL_LANDMARKS: PoseLandmark[] = [
-  { name: 'nose', x: 0.5, y: 0.12, visibility: 1 },
-  { name: 'left_shoulder', x: 0.42, y: 0.24, visibility: 1 },
-  { name: 'right_shoulder', x: 0.58, y: 0.23, visibility: 1 },
-  { name: 'left_elbow', x: 0.33, y: 0.34, visibility: 1 },
-  { name: 'right_elbow', x: 0.68, y: 0.3, visibility: 1 },
-  { name: 'left_wrist', x: 0.26, y: 0.45, visibility: 1 },
-  { name: 'right_wrist', x: 0.78, y: 0.22, visibility: 1 },
-  { name: 'left_hip', x: 0.45, y: 0.5, visibility: 1 },
-  { name: 'right_hip', x: 0.56, y: 0.49, visibility: 1 },
-  { name: 'left_knee', x: 0.4, y: 0.68, visibility: 1 },
-  { name: 'right_knee', x: 0.68, y: 0.6, visibility: 1 },
-  { name: 'left_ankle', x: 0.37, y: 0.88, visibility: 1 },
-  { name: 'right_ankle', x: 0.78, y: 0.74, visibility: 1 },
-  { name: 'left_foot_index', x: 0.35, y: 0.93, visibility: 1 },
-  { name: 'right_foot_index', x: 0.86, y: 0.8, visibility: 1 }
-]
+/**
+ * 理想フォームのデフォルト骨格。
+ * @deprecated 定義は constants/idealForm.ts へ移設した（理想値の単一ソース化）。
+ * legacy ページの後方互換のため再エクスポートのみ残す。
+ */
+export { IDEAL_LANDMARKS } from '../constants/idealForm'
