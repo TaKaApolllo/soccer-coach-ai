@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { useDropzone } from 'react-dropzone'
+import { FileRejection, useDropzone } from 'react-dropzone'
 import { FaceMode } from '../../services/profile'
 import { btnReset } from './ui'
 
@@ -20,6 +20,11 @@ interface AnalyzePanelProps {
   stepIndex: number
   error?: string | null
   onDismissError?: () => void
+  /**
+   * accept フィルタで弾かれたファイルの通知（未対応形式など）。
+   * 未指定の場合は従来どおり黙って無視する（legacy 互換）。
+   */
+  onFileRejected?: (file: File) => void
 }
 
 /**
@@ -27,10 +32,14 @@ interface AnalyzePanelProps {
  * ・dropzone: キック動画をドロップして解析開始（顔モード切替つき）
  * ・progress: アップロード → 骨格抽出 → 角度計測 → スコアリング の段階的表示
  */
-function AnalyzePanel({ mode, faceMode, onFaceModeChange, onFile, stepIndex, error, onDismissError }: AnalyzePanelProps) {
-  const onDrop = useCallback((accepted: File[]) => {
-    if (accepted[0]) onFile(accepted[0])
-  }, [onFile])
+function AnalyzePanel({ mode, faceMode, onFaceModeChange, onFile, stepIndex, error, onDismissError, onFileRejected }: AnalyzePanelProps) {
+  const onDrop = useCallback((accepted: File[], rejections: FileRejection[]) => {
+    if (accepted[0]) {
+      onFile(accepted[0])
+    } else if (rejections[0] && onFileRejected) {
+      onFileRejected(rejections[0].file)
+    }
+  }, [onFile, onFileRejected])
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,

@@ -91,7 +91,7 @@ function MainVideoPanel({
   return (
     <section
       aria-label="キックフォームビューワー"
-      className="relative overflow-hidden rounded-3xl"
+      className="relative flex-1 overflow-hidden rounded-3xl"
       style={{
         border: '1px solid rgba(148, 163, 184, 0.18)',
         background: 'linear-gradient(180deg, #0a1f33 0%, #06111f 55%, #020617 100%)',
@@ -254,6 +254,7 @@ function MainVideoPanel({
           stepIndex={analyzeStepIndex}
           error={analyzeError}
           onDismissError={onDismissError}
+          onFileRejected={onFile}
         />
       )}
     </section>
