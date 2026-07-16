@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from app import db
-from app.routers import analysis, formation, growth, hero, pose
+from app.routers import analysis, formation, growth, hero, kick_analysis, pose
 
 app = FastAPI(
     title="Soccer Coach AI",
@@ -34,6 +34,7 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 # ルーターの登録
 app.include_router(analysis.router, prefix="/api", tags=["analysis"])
 app.include_router(pose.router, prefix="/api", tags=["pose"])
+app.include_router(kick_analysis.router, prefix="/api", tags=["kick-analysis-v1"])
 app.include_router(formation.router, prefix="/api", tags=["formation"])
 app.include_router(growth.router, prefix="/api", tags=["growth"])
 app.include_router(hero.router, prefix="/api", tags=["hero"])
