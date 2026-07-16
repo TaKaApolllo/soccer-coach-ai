@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import AnalysisDetailGrid from '../../components/kick/AnalysisDetailGrid'
 import AnalysisWorkspace from '../../components/kick/AnalysisWorkspace'
 import KickAnalysisHeader from '../../components/kick/KickAnalysisHeader'
 import MainVideoPanel from '../../components/kick/MainVideoPanel'
@@ -9,7 +10,12 @@ import {
   LowConfidenceBanner,
   SampleNotice
 } from '../../components/kick/StatusPanels'
-import { MOCK_BALL_SPEED_LEAGUE_DELTA, MOCK_KICK_ANALYSIS } from '../../mocks/kickAnalysis.mock'
+import {
+  MOCK_BALL_SPEED_LEAGUE_DELTA,
+  MOCK_COMPARISON_BASELINES,
+  MOCK_KICK_ANALYSIS
+} from '../../mocks/kickAnalysis.mock'
+import { api } from '../../services/api'
 import {
   KickAnalysisPayload,
   getKickAnalysisHistory,
@@ -18,8 +24,19 @@ import {
   validateKickVideoFile
 } from '../../services/kickAnalysisApi'
 import { FaceMode, loadProfile, saveProfile } from '../../services/profile'
+import { SkillRadar } from '../../types/analysis'
 import { KickHistoryEntry } from '../../types/kickAnalysis'
 import { ViewTab, buildKickViewModel } from './viewModel'
+
+/** グロー/バーのマウント時アニメーション（reduced-motion で無効化） */
+const PAGE_CSS = `
+@keyframes kickGrow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.kpro-grow-bar { transform-origin: left center; animation: kickGrow 0.9s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .kpro-grow-bar { animation: none; }
+  .kick-analysis-page * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+`
 
 // =====================================================================
 // /analysis/kick — キックフォーム分析（統合ページ）
@@ -57,6 +74,7 @@ function KickAnalysisPage() {
   const [state, setState] = useState<PageState>({ phase: 'idle', payload: SAMPLE_PAYLOAD })
   const [history, setHistory] = useState<KickHistoryEntry[]>([])
   const [loadingShotId, setLoadingShotId] = useState<string | null>(null)
+  const [radar, setRadar] = useState<SkillRadar | null>(null)
 
   // ビュー操作
   const [tab, setTab] = useState<ViewTab>('angle')
@@ -91,6 +109,13 @@ function KickAnalysisPage() {
         setShowDropzone(true)
       }
     })
+    // スキルレーダー（成長記録 API）。失敗時はカード非表示のまま
+    api
+      .getGrowthSummary()
+      .then((s) => {
+        if (!cancelled && s.radar.current.some((v) => v > 0)) setRadar(s.radar)
+      })
+      .catch(() => undefined)
     return () => {
       cancelled = true
     }
@@ -263,8 +288,20 @@ function KickAnalysisPage() {
 
   const shotEntries: KickHistoryEntry[] = history.length > 0 ? history : payload.analysis.history
 
+  const timelineProgress = frameCount > 1 ? activeFrame / (frameCount - 1) : 0
+  const handleTimelineSeek = useCallback(
+    (p: number) => {
+      if (frameCount > 1) {
+        setActiveFrame(Math.round(p * (frameCount - 1)))
+        setPlaying(false)
+      }
+    },
+    [frameCount]
+  )
+
   return (
     <div className="kick-analysis-page relative" data-testid="kick-page" data-state={state.phase}>
+      <style>{PAGE_CSS}</style>
       <KickAnalysisHeader tab={tab} onTabChange={setTab} />
 
       {/* 状態バナー */}
@@ -317,6 +354,20 @@ function KickAnalysisPage() {
         summary={
           <AnalysisSummaryPanel analysis={payload.analysis} ballSpeedCaption={ballSpeedCaption} />
         }
+      />
+
+      <AnalysisDetailGrid
+        vm={vm}
+        analysis={payload.analysis}
+        partComments={payload.source?.pose?.body_part_scores ?? null}
+        radar={radar}
+        baselines={MOCK_COMPARISON_BASELINES}
+        baselinesAreSample
+        history={shotEntries}
+        activeAnalysisId={analysisId}
+        onSelectHistory={handleSelectShot}
+        progress={timelineProgress}
+        onSeek={handleTimelineSeek}
       />
     </div>
   )
