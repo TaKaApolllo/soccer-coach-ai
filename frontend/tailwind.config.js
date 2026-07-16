@@ -6,7 +6,12 @@ export default {
     preflight: false
   },
   theme: {
-    extend: {}
+    extend: {
+      screens: {
+        // 3カラムレイアウト用の追加ブレークポイント（/analysis/kick）
+        wide: '1440px'
+      }
+    }
   },
   plugins: []
 }

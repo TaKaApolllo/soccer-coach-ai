@@ -196,7 +196,7 @@ interface AnalysisSummaryPanelProps {
 /** 右カラム: 信頼度 / フェーズ / 主要計測値 */
 function AnalysisSummaryPanel({ analysis, ballSpeedCaption }: AnalysisSummaryPanelProps) {
   return (
-    <div className="flex min-w-0 flex-col gap-4">
+    <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-1">
       <AnalysisConfidenceCard quality={analysis.captureQuality} />
       <PhaseSummaryCard analysis={analysis} />
       <KeyMetricList metrics={analysis.metrics} ballSpeedCaption={ballSpeedCaption} />
