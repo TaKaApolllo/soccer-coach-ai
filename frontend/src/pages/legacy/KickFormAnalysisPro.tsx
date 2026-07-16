@@ -1,25 +1,31 @@
+/**
+ * @deprecated このページは /analysis/kick（pages/kick/KickAnalysisPage.tsx）へ
+ * 統合されたため、ルーティングから除外されている。旧ルートは
+ * /analysis/kick へリダイレクトされる。参照実装として残置しているのみで、
+ * 新機能はここに追加しないこと。
+ */
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import AICoachCommentCard from '../components/analysis/AICoachCommentCard'
-import AnalysisHeader, { ProTab } from '../components/analysis/AnalysisHeader'
-import AnalysisHistoryCard from '../components/analysis/AnalysisHistoryCard'
-import AngleListCard from '../components/analysis/AngleListCard'
-import IdealComparisonCard from '../components/analysis/IdealComparisonCard'
-import ImprovementRankingCard from '../components/analysis/ImprovementRankingCard'
-import InsightStrip from '../components/analysis/InsightStrip'
-import MainFormViewer from '../components/analysis/MainFormViewer'
-import MetricGaugeCard from '../components/analysis/MetricGaugeCard'
-import MotionTimeline from '../components/analysis/MotionTimeline'
-import Onboarding, { ONBOARD_KEY } from '../components/analysis/Onboarding'
-import SessionInfoCard from '../components/analysis/SessionInfoCard'
-import ShotSidebar from '../components/analysis/ShotSidebar'
-import SkillProgressCard from '../components/analysis/SkillProgressCard'
-import SkillRadarCard from '../components/analysis/SkillRadarCard'
-import ToastStack, { ToastItem, ToastTone } from '../components/analysis/Toast'
-import TrainingRecommendationCard from '../components/analysis/TrainingRecommendationCard'
-import { MOCK_PRO_ANALYSIS } from '../data/mockAnalysisData'
-import { api } from '../services/api'
-import { FaceMode, loadProfile, saveProfile } from '../services/profile'
-import { PoseAnalysisResponse } from '../types'
+import AICoachCommentCard from '../../components/analysis/AICoachCommentCard'
+import AnalysisHeader, { ProTab } from '../../components/analysis/AnalysisHeader'
+import AnalysisHistoryCard from '../../components/analysis/AnalysisHistoryCard'
+import AngleListCard from '../../components/analysis/AngleListCard'
+import IdealComparisonCard from '../../components/analysis/IdealComparisonCard'
+import ImprovementRankingCard from '../../components/analysis/ImprovementRankingCard'
+import InsightStrip from '../../components/analysis/InsightStrip'
+import MainFormViewer from '../../components/analysis/MainFormViewer'
+import MetricGaugeCard from '../../components/analysis/MetricGaugeCard'
+import MotionTimeline from '../../components/analysis/MotionTimeline'
+import Onboarding, { ONBOARD_KEY } from '../../components/analysis/Onboarding'
+import SessionInfoCard from '../../components/analysis/SessionInfoCard'
+import ShotSidebar from '../../components/analysis/ShotSidebar'
+import SkillProgressCard from '../../components/analysis/SkillProgressCard'
+import SkillRadarCard from '../../components/analysis/SkillRadarCard'
+import ToastStack, { ToastItem, ToastTone } from '../../components/analysis/Toast'
+import TrainingRecommendationCard from '../../components/analysis/TrainingRecommendationCard'
+import { MOCK_PRO_ANALYSIS } from '../../data/mockAnalysisData'
+import { api } from '../../services/api'
+import { FaceMode, loadProfile, saveProfile } from '../../services/profile'
+import { PoseAnalysisResponse } from '../../types'
 import {
   ComparisonBaseline,
   HistoryEntry,
@@ -27,7 +33,7 @@ import {
   ProAnalysis,
   deriveInsights,
   proFromPoseResponse
-} from '../types/analysis'
+} from '../../types/analysis'
 
 /** ゲージ・バーのマウント時アニメーション + 開封演出（この画面専用の軽量 CSS） */
 const PAGE_CSS = `

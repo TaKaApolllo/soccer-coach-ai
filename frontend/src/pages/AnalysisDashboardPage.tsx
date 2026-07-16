@@ -311,9 +311,7 @@ function AnalysisDashboardPage() {
           <div className="card">
             <h3 className="card-title">
               キックフォーム分析
-              <Link to="/kick-pro" className="title-link" style={{ marginRight: 10, color: 'var(--accent)' }}>Pro分析 ›</Link>
-              <Link to="/form-analysis" className="title-link" style={{ marginRight: 10 }}>フォーム分析 ›</Link>
-              <Link to="/kick" className="title-link">詳細分析を開く ›</Link>
+              <Link to="/analysis/kick" className="title-link" style={{ color: 'var(--accent)' }}>詳細分析を開く ›</Link>
             </h3>
 
             {!poseResult && (

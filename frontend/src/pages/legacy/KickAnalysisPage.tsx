@@ -1,20 +1,26 @@
+/**
+ * @deprecated このページは /analysis/kick（pages/kick/KickAnalysisPage.tsx）へ
+ * 統合されたため、ルーティングから除外されている。旧ルートは
+ * /analysis/kick へリダイレクトされる。参照実装として残置しているのみで、
+ * 新機能はここに追加しないこと。
+ */
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import GaugeTile from '../components/GaugeTile'
-import IdealCompareBars from '../components/IdealCompareBars'
-import MotionTimeline from '../components/MotionTimeline'
-import RadarChart from '../components/RadarChart'
-import TrendChart from '../components/TrendChart'
-import UploadCard from '../components/UploadCard'
-import { api } from '../services/api'
-import { FaceMode, loadProfile } from '../services/profile'
+import GaugeTile from '../../components/GaugeTile'
+import IdealCompareBars from '../../components/IdealCompareBars'
+import MotionTimeline from '../../components/MotionTimeline'
+import RadarChart from '../../components/RadarChart'
+import TrendChart from '../../components/TrendChart'
+import UploadCard from '../../components/UploadCard'
+import { api } from '../../services/api'
+import { FaceMode, loadProfile } from '../../services/profile'
 import {
   AnalysisHistoryItem,
   FormationResponse,
   GrowthSummary,
   PoseAnalysisResponse,
   TrendData
-} from '../types'
+} from '../../types'
 
 type ViewTab = 'form' | 'angle' | 'skeleton' | 'compare'
 

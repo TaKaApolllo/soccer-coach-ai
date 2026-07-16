@@ -1,16 +1,22 @@
+/**
+ * @deprecated このページは /analysis/kick（pages/kick/KickAnalysisPage.tsx）へ
+ * 統合されたため、ルーティングから除外されている。旧ルートは
+ * /analysis/kick へリダイレクトされる。参照実装として残置しているのみで、
+ * 新機能はここに追加しないこと。
+ */
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import AdvicePanel from '../components/form/AdvicePanel'
-import AvatarViewer from '../components/form/AvatarViewer'
-import ComparisonView from '../components/form/ComparisonView'
-import ScoreCard from '../components/form/ScoreCard'
-import { api } from '../services/api'
+import AdvicePanel from '../../components/form/AdvicePanel'
+import AvatarViewer from '../../components/form/AvatarViewer'
+import ComparisonView from '../../components/form/ComparisonView'
+import ScoreCard from '../../components/form/ScoreCard'
+import { api } from '../../services/api'
 import {
   MOCK_BODY_PART_SCORES,
   MOCK_CENTER_OF_GRAVITY,
   MOCK_IMPROVEMENT_RANKINGS,
   MOCK_OVERALL_SCORE
-} from '../mocks/formAnalysisMock'
+} from '../../mocks/formAnalysisMock'
 import {
   BodyPartScore,
   BodyPartScores,
@@ -18,7 +24,7 @@ import {
   ImprovementRanking,
   PoseAnalysisResponse,
   PoseLandmark
-} from '../types'
+} from '../../types'
 
 const PART_ORDER: (keyof BodyPartScores)[] = ['plant_leg', 'kicking_leg', 'upper_body', 'balance']
 

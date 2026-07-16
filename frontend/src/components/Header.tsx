@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom'
 export const NAV_ITEMS = [
   { to: '/', icon: '🏠', label: 'ホーム' },
   { to: '/analysis', icon: '📊', label: '分析' },
+  { to: '/analysis/kick', icon: '🎯', label: 'キック分析' },
   { to: '/growth', icon: '📈', label: '成長記録' },
   { to: '/drills', icon: '⚽', label: '練習メニュー' },
   { to: '/settings', icon: '⚙️', label: '設定' }
@@ -22,7 +23,7 @@ function Header() {
               key={item.to}
               to={item.to}
               className={({ isActive }) => (isActive ? 'active' : '')}
-              end={item.to === '/'}
+              end={item.to === '/' || item.to === '/analysis'}
             >
               <span aria-hidden>{item.icon}</span> {item.label}
             </NavLink>

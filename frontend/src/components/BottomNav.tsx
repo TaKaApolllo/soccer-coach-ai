@@ -9,7 +9,7 @@ function BottomNav() {
           key={item.to}
           to={item.to}
           className={({ isActive }) => (isActive ? 'active' : '')}
-          end={item.to === '/'}
+          end={item.to === '/' || item.to === '/analysis'}
         >
           <span className="nav-icon" aria-hidden>{item.icon}</span>
           {item.label}
