@@ -86,17 +86,32 @@
 | `width` / `height` | `number \| null` | 現行 API は null |
 | `orientation` | `VideoOrientation` | 現行 API は `unknown` |
 
-### CaptureQuality
+### CaptureQuality（#22 で本実装・optional 拡張あり）
 
 | フィールド | 型 | 備考 |
 |---|---|---|
-| `score` | `number(0-100) \| null` | 骨格検出率ベース |
+| `score` | `number(0-100) \| null` | 撮影品質の総合スコア（人物30% + カバレッジ25% + 画質25% + ビュー20% の加重。人物未検出時は null） |
 | `status` | `MeasurementStatus` | |
-| `cameraView` | `CameraView` | #22 実装まで `unknown` |
-| `fullBodyVisible` | `boolean` | 検出率 ≥ 0.5 で true |
-| `singlePersonDetected` | `boolean` | |
-| `brightnessScore` / `blurScore` | `number(0-100) \| null` | #22 実装まで null |
-| `warnings` | `string[]` | ユーザー向け警告（次の行動を含む） |
+| `cameraView` | `CameraView` | 肩幅比 + 鼻可視性から推定。`side` 推奨。front/rear/unknown では角度系メトリクスが `low_confidence` に制限される |
+| `fullBodyVisible` | `boolean` | 全身キーポイントカバレッジ ≥ 90% |
+| `singlePersonDetected` | `boolean` | HOG 検出 bbox の IoU クラスタ数で近似 |
+| `personScaleScore` | `number(0-100) \| null` | 人物サイズの適正度（#22 optional 拡張） |
+| `brightnessScore` | `number(0-100) \| null` | 輝度ヒストグラム平均から算出 |
+| `blurScore` | `number(0-100) \| null` | Laplacian 分散から算出（大きいほどシャープ） |
+| `keypointCoverage` | `number(0-100) \| null` | 頭・肩・腰・膝・足首・つま先の可視率（#22 optional 拡張） |
+| `warnings` | `string[]` | ユーザー向け警告 |
+| `retakeInstructions` | `string[]` | 具体的な再撮影ガイダンス（#22 optional 拡張。UI ではスコアより前に表示） |
+
+しきい値はすべて `backend/app/config/capture_quality.py` に集約（判定ロジックは
+`backend/app/services/capture_quality.py` の純粋関数群）。
+
+**品質ゲーティング**（保存される `capture_quality.level`）:
+
+| level | 条件（例） | 契約上の status |
+|---|---|---|
+| `critical` | 人物未検出 / 解像度不足 / 動画が短すぎ・長すぎ / FPS 不足 | `failed`（解析中止 + 再撮影指示） |
+| `warning` | 暗い / ブラー / 縦向き / 見切れ / 人物小 / 複数人 / 正面撮り / 関節検出不安定 | `low_confidence`（結果は表示） |
+| `ok` | 問題なし | `completed` |
 
 ### MotionPhaseSegment
 
@@ -223,9 +238,18 @@
 3. 双方失敗時は `null` を返し、画面は idle（サンプル表示）へ遷移（クラッシュしない）
 4. `analysis.status === "failed"` は画面の failed 状態（理由 + 再試行 + 次の行動）に対応
 
+## 旧レコードとの互換（#22 以降）
+
+- 解析時に `payload.capture_quality`（品質評価）と `payload.video_meta`（fps/解像度/向き）が
+  保存され、アダプタはこれを優先する。**#22 以前の旧レコードには存在しない**ため、
+  その場合は従来どおり検出率ベースのフォールバック（cameraView `unknown`、
+  brightness/blur/personScale/keypointCoverage は null、video.fps 等は null）
+- メトリクスへの反映: `metric_confidences`（関節グループの visibility 最小値）で
+  confidence を上書き、`angle_metrics_restricted` / `unreliable_frame_indices` に
+  該当する角度メトリクスは `measurementStatus: low_confidence` に降格
+
 ## 既知の暫定事項（v1.1 で解消予定）
 
-- `captureQuality.cameraView / brightnessScore / blurScore` — #22（撮影品質計測）まで unknown / null
 - `scores.followThrough` — アダプタでの暫定導出（バックエンドの部位別スコアラー拡張で正式化）
-- `video.fps / width / height / orientation` — 現行 API が保存しないため null / unknown
+- 複数人判定は HOG 歩行者検出 + bbox IoU の近似（専用検出器の導入で精度向上余地）
 - 理想レンジ単一ソースの FE/BE 二重管理 — FE を API 配布値（`metrics[].idealRange`）参照へ完全移行したら FE 定義を削除
