@@ -13,3 +13,6 @@ mediapipe==0.10.14
 # 選手検出の高精度バックエンド（任意・GPU 推奨）
 # https://github.com/roboflow/rf-detr
 # rfdetr>=1.0.0
+
+# 開発用（テスト実行に必要。実行時依存ではない）
+pytest>=8
