@@ -130,6 +130,7 @@ class PoseEstimator:
         annotated: List[str] = []   # 角度ビュー（AR注釈付き）
         clean: List[str] = []       # フォームビュー（元映像）
         skeleton_only: List[str] = []  # 骨格ビュー（暗背景にスケルトンのみ）
+        person_ratios: List[Optional[float]] = []  # 被写体占有率（セグメンテーション比率）
 
         with mp.solutions.pose.Pose(
             static_image_mode=True,
@@ -162,6 +163,10 @@ class PoseEstimator:
 
                     fp.angles = self._compute_angles(pts)
                     seg_mask = getattr(result, "segmentation_mask", None)
+                    # 撮影品質判定用: 被写体が画面を占める割合
+                    person_ratios.append(
+                        round(float((seg_mask > 0.5).mean()), 4) if seg_mask is not None else None
+                    )
                     use_avatar_face = face_mode == "avatar"
 
                     # フォームビュー: 元映像（アバター顔モードでは顔を覆う）
@@ -183,6 +188,7 @@ class PoseEstimator:
                     clean_frame = frame
                     frame_out = frame
                     skeleton_frame = None
+                    person_ratios.append(None)
 
                 poses.append(fp)
                 clean.append(self._to_base64(clean_frame))
@@ -216,8 +222,9 @@ class PoseEstimator:
                     "landmarks": p.landmarks,
                     "angles": p.angles,
                     "phase": p.phase,
+                    "person_ratio": ratio,
                 }
-                for p in poses
+                for p, ratio in zip(poses, person_ratios)
             ],
             "annotated_images": annotated,
             "clean_images": clean,

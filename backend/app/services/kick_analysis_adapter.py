@@ -247,6 +247,46 @@ def _feedback(payload: dict, pose: Optional[dict]) -> KickFeedback:
     return KickFeedback(strengths=strengths, priorities=priorities, drills=drills)
 
 
+_MEASUREMENT_VALUES = {s.value for s in MeasurementStatus}
+_CAMERA_VIEW_VALUES = {v.value for v in CameraView}
+
+
+def _clamp_score(v) -> Optional[int]:
+    """0-100 に収まる整数のみ受け入れる（それ以外は None = 測定不能）"""
+    if isinstance(v, (int, float)) and 0 <= v <= 100:
+        return int(round(v))
+    return None
+
+
+def _capture_quality_from_stored(stored: dict) -> CaptureQuality:
+    """解析時に保存された撮影品質評価（#22）→ 契約 CaptureQuality"""
+    status = stored.get("status")
+    view = stored.get("camera_view")
+    warnings = stored.get("warnings")
+    instructions = stored.get("retake_instructions")
+    return CaptureQuality(
+        score=_clamp_score(stored.get("score")),
+        status=(
+            MeasurementStatus(status)
+            if status in _MEASUREMENT_VALUES
+            else MeasurementStatus.UNAVAILABLE
+        ),
+        camera_view=(
+            CameraView(view) if view in _CAMERA_VIEW_VALUES else CameraView.UNKNOWN
+        ),
+        full_body_visible=bool(stored.get("full_body_visible")),
+        single_person_detected=bool(stored.get("single_person_detected")),
+        person_scale_score=_clamp_score(stored.get("person_scale_score")),
+        brightness_score=_clamp_score(stored.get("brightness_score")),
+        blur_score=_clamp_score(stored.get("blur_score")),
+        keypoint_coverage=_clamp_score(stored.get("keypoint_coverage")),
+        warnings=[str(w) for w in warnings] if isinstance(warnings, list) else [],
+        retake_instructions=(
+            [str(i) for i in instructions] if isinstance(instructions, list) else []
+        ),
+    )
+
+
 def _capture_quality(payload: dict, detection_rate: Optional[float]) -> CaptureQuality:
     warnings: List[str] = []
     if payload.get("pose_error"):
@@ -307,25 +347,99 @@ def kick_analysis_from_payload(
     metrics = _angle_metrics(pose, confidence) if pose else []
     metrics.append(_ball_speed_metric(payload, confidence))
 
+    # ---- 撮影品質評価（#22）が保存されていれば優先し、ゲーティングを適用 ----
+    stored_quality = payload.get("capture_quality")
+    if isinstance(stored_quality, dict):
+        capture = _capture_quality_from_stored(stored_quality)
+        level = stored_quality.get("level")
+        if level == "critical":
+            status = AnalysisStatus.FAILED
+        elif level == "warning" and status == AnalysisStatus.COMPLETED:
+            status = AnalysisStatus.LOW_CONFIDENCE
+        metrics = _apply_quality_to_metrics(metrics, stored_quality)
+    else:
+        capture = _capture_quality(payload, detection_rate)
+
+    # ---- 動画メタ（#22 で解析時に保存）。無い旧レコードは従来どおり ----
     duration = payload.get("duration")
+    vm = payload.get("video_meta")
+    if isinstance(vm, dict):
+        orientation = vm.get("orientation")
+        video = VideoInfo(
+            duration_ms=(
+                vm.get("duration_ms")
+                if vm.get("duration_ms") is not None
+                else (round(duration * 1000) if duration is not None else None)
+            ),
+            fps=vm.get("fps"),
+            width=vm.get("width"),
+            height=vm.get("height"),
+            orientation=(
+                VideoOrientation(orientation)
+                if orientation in {o.value for o in VideoOrientation}
+                else VideoOrientation.UNKNOWN
+            ),
+        )
+    else:
+        video = VideoInfo(
+            duration_ms=round(duration * 1000) if duration is not None else None,
+            fps=None,  # 旧レコードは fps を保存していない
+            width=None,
+            height=None,
+            orientation=VideoOrientation.UNKNOWN,
+        )
+
     return KickAnalysisResult(
         analysis_id=analysis_id,
         status=status,
         created_at=created_at,
-        video=VideoInfo(
-            duration_ms=round(duration * 1000) if duration is not None else None,
-            fps=None,  # 現行 API は fps を保存しない
-            width=None,
-            height=None,
-            orientation=VideoOrientation.UNKNOWN,
-        ),
-        capture_quality=_capture_quality(payload, detection_rate),
+        video=video,
+        capture_quality=capture,
         phases=_phase_segments(pose, confidence) if pose else [],
         scores=_scores(payload, pose, score),
         metrics=metrics,
         feedback=_feedback(payload, pose),
         history=history or [],
     )
+
+
+def _apply_quality_to_metrics(
+    metrics: List[KickMetric], stored_quality: dict
+) -> List[KickMetric]:
+    """撮影品質評価をメトリクスへ反映する
+
+    - metric_confidences: 関節グループの visibility 由来の信頼度で上書き
+      （既存の検出率ベース confidence との小さい方）
+    - angle_metrics_restricted: front/rear/unknown ビューでは角度系を
+      low_confidence に制限
+    - unreliable_frame_indices: 主要関節の visibility が低いフレームで
+      計測されたメトリクスを low_confidence に落とす（除外/補間フラグ）
+    """
+    conf_map = stored_quality.get("metric_confidences")
+    conf_map = conf_map if isinstance(conf_map, dict) else {}
+    restricted = bool(stored_quality.get("angle_metrics_restricted"))
+    unreliable = stored_quality.get("unreliable_frame_indices")
+    unreliable_set = set(unreliable) if isinstance(unreliable, list) else set()
+
+    adjusted: List[KickMetric] = []
+    for m in metrics:
+        confidence = m.confidence
+        measurement = m.measurement_status
+        if m.unit == "deg":
+            kp_conf = conf_map.get(m.id)
+            if isinstance(kp_conf, (int, float)):
+                confidence = round(min(confidence, max(0.0, min(1.0, float(kp_conf)))), 3)
+            downgrade = (
+                restricted
+                or (m.frame is not None and m.frame in unreliable_set)
+                or confidence < LOW_CONFIDENCE_DETECTION_RATE
+            )
+            if downgrade and measurement == MeasurementStatus.AVAILABLE:
+                measurement = MeasurementStatus.LOW_CONFIDENCE
+        adjusted.append(
+            m.model_copy(update={"confidence": confidence, "measurement_status": measurement})
+        )
+    return adjusted
 
 
 def failed_kick_analysis(analysis_id: str, created_at: str, message: str) -> KickAnalysisResult:

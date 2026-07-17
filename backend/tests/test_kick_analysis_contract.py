@@ -356,6 +356,109 @@ class TestAdapterConversion:
 
 
 # ----------------------------------------------------------------------
+# ⑦b 撮影品質評価（#22）が保存されたペイロードの変換
+# ----------------------------------------------------------------------
+
+STORED_QUALITY = {
+    "score": 72,
+    "status": "low_confidence",
+    "level": "warning",
+    "camera_view": "front",
+    "full_body_visible": True,
+    "single_person_detected": True,
+    "person_scale_score": 88,
+    "brightness_score": 95,
+    "blur_score": 90,
+    "keypoint_coverage": 100,
+    "warnings": ["正面からの撮影のため、角度の計測は参考値になります。"],
+    "retake_instructions": ["蹴り足側の真横から撮影すると、角度を正確に計測できます。"],
+    "angle_metrics_restricted": True,
+    "metric_confidences": {"torso_lean": 0.4},
+    "unreliable_frame_indices": [],
+}
+
+STORED_VIDEO_META = {
+    "width": 1280, "height": 720, "fps": 29.97,
+    "duration_ms": 1000, "orientation": "landscape",
+}
+
+
+class TestStoredCaptureQuality:
+    def _payload_with_quality(self, quality=None, video_meta=None):
+        payload = copy.deepcopy(LEGACY_PAYLOAD)
+        payload["capture_quality"] = quality if quality is not None else copy.deepcopy(STORED_QUALITY)
+        payload["video_meta"] = video_meta if video_meta is not None else dict(STORED_VIDEO_META)
+        return payload
+
+    def test_stored_quality_is_preferred(self):
+        result = convert(self._payload_with_quality())
+        q = result.capture_quality
+        assert q.camera_view.value == "front"
+        assert q.person_scale_score == 88
+        assert q.keypoint_coverage == 100
+        assert q.retake_instructions == STORED_QUALITY["retake_instructions"]
+        # スキーマ検証も通る（optional 拡張の後方互換）
+        KickAnalysisResult.model_validate(result.model_dump(by_alias=True))
+
+    def test_warning_level_downgrades_status(self):
+        result = convert(self._payload_with_quality())
+        assert result.status == AnalysisStatus.LOW_CONFIDENCE
+
+    def test_critical_level_yields_failed(self):
+        quality = dict(STORED_QUALITY, level="critical", status="unavailable")
+        result = convert(self._payload_with_quality(quality=quality))
+        assert result.status == AnalysisStatus.FAILED
+
+    def test_ok_level_keeps_completed(self):
+        quality = dict(
+            STORED_QUALITY,
+            level="ok", status="available", camera_view="side",
+            angle_metrics_restricted=False, metric_confidences={},
+            warnings=[], retake_instructions=[],
+        )
+        result = convert(self._payload_with_quality(quality=quality))
+        assert result.status == AnalysisStatus.COMPLETED
+
+    def test_angle_restriction_downgrades_deg_metrics_only(self):
+        result = convert(self._payload_with_quality())
+        for m in result.metrics:
+            if m.unit == "deg":
+                assert m.measurement_status == MeasurementStatus.LOW_CONFIDENCE
+        ball = next(m for m in result.metrics if m.id == "ball_speed")
+        assert ball.measurement_status == MeasurementStatus.LOW_CONFIDENCE  # 元々概算
+
+    def test_metric_confidence_overridden_by_keypoint_confidence(self):
+        result = convert(self._payload_with_quality())
+        torso = next(m for m in result.metrics if m.id == "torso_lean")
+        assert torso.confidence == pytest.approx(0.4)
+
+    def test_unreliable_frame_downgrades_metric(self):
+        quality = dict(
+            STORED_QUALITY,
+            angle_metrics_restricted=False, metric_confidences={},
+            unreliable_frame_indices=[3],  # key_frame_index = 3
+        )
+        result = convert(self._payload_with_quality(quality=quality))
+        torso = next(m for m in result.metrics if m.id == "torso_lean")
+        assert torso.frame == 3
+        assert torso.measurement_status == MeasurementStatus.LOW_CONFIDENCE
+
+    def test_video_meta_fills_contract_video(self):
+        result = convert(self._payload_with_quality())
+        assert result.video.width == 1280
+        assert result.video.height == 720
+        assert result.video.fps == pytest.approx(29.97)
+        assert result.video.duration_ms == 1000
+        assert result.video.orientation.value == "landscape"
+
+    def test_legacy_payload_without_quality_still_works(self):
+        result = convert()  # capture_quality / video_meta なしの旧レコード
+        assert result.video.fps is None
+        assert result.capture_quality.retake_instructions == []
+        assert result.status == AnalysisStatus.COMPLETED
+
+
+# ----------------------------------------------------------------------
 # ⑧ 旧 API の後方互換 + v1 エンドポイント
 # ----------------------------------------------------------------------
 

@@ -100,16 +100,23 @@ class VideoInfo(_ContractModel):
 
 
 class CaptureQuality(_ContractModel):
-    """撮影品質。score が None の項目は 0 ではなく「測定不能」を意味する"""
+    """撮影品質。score が None の項目は 0 ではなく「測定不能」を意味する
+
+    person_scale_score / keypoint_coverage / retake_instructions は
+    契約 v1.0 の optional 拡張（#22）。旧クライアントは無視できる。
+    """
 
     score: Optional[int] = Field(default=None, ge=0, le=100)
     status: MeasurementStatus
     camera_view: CameraView = CameraView.UNKNOWN
     full_body_visible: bool = False
     single_person_detected: bool = False
+    person_scale_score: Optional[int] = Field(default=None, ge=0, le=100)
     brightness_score: Optional[int] = Field(default=None, ge=0, le=100)
     blur_score: Optional[int] = Field(default=None, ge=0, le=100)
+    keypoint_coverage: Optional[int] = Field(default=None, ge=0, le=100)
     warnings: List[str] = Field(default_factory=list)
+    retake_instructions: List[str] = Field(default_factory=list)
 
 
 class MotionPhaseSegment(_ContractModel):
