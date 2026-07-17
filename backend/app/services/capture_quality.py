@@ -538,9 +538,13 @@ def assess_capture_quality(
     if detected_frames > 0:
         weighted.append((view_component, cfg.SCORE_WEIGHT_VIEW))
 
-    if weighted:
+    if person_missing:
+        # 人物が検出できない場合、キーポイント系の品質は測定不能。
+        # 画質だけで高スコアを出すと誤解を招くため None とする（0 埋めもしない）
+        score: Optional[int] = None
+    elif weighted:
         total_w = sum(w for _, w in weighted)
-        score: Optional[int] = int(round(sum(v * w for v, w in weighted) / total_w))
+        score = int(round(sum(v * w for v, w in weighted) / total_w))
     else:
         score = None
 
