@@ -43,9 +43,12 @@ export const MOCK_KICK_ANALYSIS: KickAnalysisResult = {
     cameraView: 'side',
     fullBodyVisible: true,
     singlePersonDetected: true,
+    personScaleScore: 92,
     brightnessScore: 78,
     blurScore: 82,
-    warnings: []
+    keypointCoverage: 100,
+    warnings: [],
+    retakeInstructions: []
   },
   phases: [
     { type: 'approach', startFrame: 0, peakFrame: 1, endFrame: 2, confidence: 0.87 },

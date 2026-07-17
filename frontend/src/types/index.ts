@@ -151,6 +151,37 @@ export interface PoseResult {
   center_of_gravity?: CenterOfGravity
 }
 
+/**
+ * 解析時に保存される撮影品質評価（#22）。
+ * バックエンド services/capture_quality.QualityAssessment.to_payload() と同形。
+ */
+export interface StoredCaptureQuality {
+  score: number | null
+  status: string
+  level: string
+  camera_view: string
+  full_body_visible: boolean
+  single_person_detected: boolean
+  person_scale_score: number | null
+  brightness_score: number | null
+  blur_score: number | null
+  keypoint_coverage: number | null
+  warnings: string[]
+  retake_instructions: string[]
+  angle_metrics_restricted: boolean
+  metric_confidences: Record<string, number>
+  unreliable_frame_indices: number[]
+}
+
+/** 解析時に保存される動画メタ情報（#22） */
+export interface StoredVideoMeta {
+  width: number | null
+  height: number | null
+  fps: number | null
+  duration_ms: number | null
+  orientation: string
+}
+
 export interface PoseAnalysisResponse {
   id: string
   filename: string
@@ -164,6 +195,10 @@ export interface PoseAnalysisResponse {
   frame_times?: number[] | null
   duration?: number | null
   ai_feedback: AIFeedback
+  /** 撮影品質評価（#22 以降の解析のみ。旧レコードには無い） */
+  capture_quality?: StoredCaptureQuality | null
+  /** 動画メタ情報（#22 以降の解析のみ） */
+  video_meta?: StoredVideoMeta | null
 }
 
 // ---------------------------------------------------------------

@@ -56,7 +56,14 @@ type PageState =
   | { phase: 'processing'; fileName: string; step: number; payload: KickAnalysisPayload }
   | { phase: 'completed'; payload: KickAnalysisPayload }
   | { phase: 'low_confidence'; payload: KickAnalysisPayload }
-  | { phase: 'failed'; message: string; hint: string; payload: KickAnalysisPayload }
+  | {
+      phase: 'failed'
+      message: string
+      hint: string
+      /** 撮影品質評価による具体的な再撮影ガイダンス */
+      instructions: string[]
+      payload: KickAnalysisPayload
+    }
 
 const SAMPLE_PAYLOAD: KickAnalysisPayload = {
   analysis: MOCK_KICK_ANALYSIS,
@@ -169,12 +176,13 @@ function KickAnalysisPage() {
 
   const applyPayload = useCallback((p: KickAnalysisPayload) => {
     if (p.analysis.status === 'failed') {
-      // バックエンドが構造化エラー（変換不能データ等）を返したケース
+      // 撮影品質 critical / 変換不能データ等、バックエンドの構造化エラー
       setState({
         phase: 'failed',
         message:
           p.analysis.captureQuality.warnings[0] ?? '解析データを読み込めませんでした。',
         hint: RETRY_HINT,
+        instructions: p.analysis.captureQuality.retakeInstructions,
         payload: SAMPLE_PAYLOAD
       })
       setShowDropzone(false)
@@ -245,7 +253,13 @@ function KickAnalysisPage() {
           (err instanceof Error && err.message.includes('Network')
             ? 'サーバーに接続できませんでした。バックエンドが起動しているか確認してください。'
             : 'フォーム解析に失敗しました。')
-        setState({ phase: 'failed', message, hint: RETRY_HINT, payload: prevPayload })
+        setState({
+          phase: 'failed',
+          message,
+          hint: RETRY_HINT,
+          instructions: [],
+          payload: prevPayload
+        })
         setShowDropzone(false)
       }
     },
@@ -323,10 +337,16 @@ function KickAnalysisPage() {
         <LowConfidenceBanner
           warnings={payload.analysis.captureQuality.warnings}
           detectionScore={payload.analysis.captureQuality.score}
+          instructions={payload.analysis.captureQuality.retakeInstructions}
         />
       )}
       {state.phase === 'failed' && (
-        <FailedPanel message={state.message} hint={state.hint} onRetry={handleRetry} />
+        <FailedPanel
+          message={state.message}
+          hint={state.hint}
+          instructions={state.instructions}
+          onRetry={handleRetry}
+        />
       )}
 
       <AnalysisWorkspace

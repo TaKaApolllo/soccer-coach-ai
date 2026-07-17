@@ -35,16 +35,46 @@ function ConfidenceRow({ label, value }: { label: string; value: string }) {
   )
 }
 
+function scoreValue(v: number | null): string {
+  return v === null ? '計測不可' : `${v}`
+}
+
 export function AnalysisConfidenceCard({ quality }: { quality: CaptureQuality }) {
   const score = quality.score
-  const color = score === null ? '#94a3b8' : score >= 50 ? '#39ff88' : '#facc15'
+  const color = score === null ? '#94a3b8' : score >= 60 ? '#39ff88' : '#facc15'
   return (
-    <Card title="解析の信頼度">
+    <Card title="撮影品質と信頼度">
+      {/* 警告 + 再撮影ガイダンスはスコアより前（上）に表示する */}
+      {quality.warnings.length > 0 && (
+        <div
+          data-testid="quality-warnings"
+          className="mb-3 rounded-xl px-3 py-2"
+          style={{ background: 'rgba(250,204,21,0.08)', border: '1px solid rgba(250,204,21,0.35)' }}
+        >
+          <ul className="m-0 list-none space-y-1 p-0">
+            {quality.warnings.map((w, i) => (
+              <li key={i} className="text-[11px] leading-relaxed" style={{ color: '#facc15' }}>
+                ⚠ {w}
+              </li>
+            ))}
+          </ul>
+          {quality.retakeInstructions.length > 0 && (
+            <ul className="m-0 mt-1.5 list-none space-y-1 border-t p-0 pt-1.5" style={{ borderColor: 'rgba(250,204,21,0.25)' }}>
+              {quality.retakeInstructions.map((inst, i) => (
+                <li key={i} className="text-[11px] leading-relaxed text-slate-200">
+                  📷 {inst}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       <div className="mb-2 flex items-baseline gap-1">
         <span className="text-3xl font-black tabular-nums" style={{ color }}>
           {score ?? '--'}
         </span>
-        <span className="text-xs font-bold text-slate-400">%（骨格検出率）</span>
+        <span className="text-xs font-bold text-slate-400">/100（撮影品質スコア）</span>
       </div>
       <div className="mb-3 h-1.5 overflow-hidden rounded-full" style={{ background: 'rgba(148,163,184,0.14)' }}>
         <div
@@ -54,31 +84,26 @@ export function AnalysisConfidenceCard({ quality }: { quality: CaptureQuality })
       </div>
       <dl className="m-0 space-y-1.5">
         <ConfidenceRow
+          label="撮影アングル"
+          value={
+            quality.cameraView === 'unknown'
+              ? '判定なし'
+              : { side: '✓ 横から（推奨）', front: '△ 正面', rear: '△ 後方', diagonal: '斜め' }[quality.cameraView]
+          }
+        />
+        <ConfidenceRow
           label="全身の写り"
           value={quality.fullBodyVisible ? '✓ 良好' : '△ 一部のみ'}
         />
         <ConfidenceRow
           label="被写体"
-          value={quality.singlePersonDetected ? '✓ 1人を検出' : '－ 未検出'}
+          value={quality.singlePersonDetected ? '✓ 1人を検出' : '△ 特定できず'}
         />
-        <ConfidenceRow
-          label="撮影アングル"
-          value={
-            quality.cameraView === 'unknown'
-              ? '判定なし'
-              : { side: '横から', front: '正面', rear: '後方', diagonal: '斜め' }[quality.cameraView]
-          }
-        />
+        <ConfidenceRow label="人物サイズ" value={scoreValue(quality.personScaleScore)} />
+        <ConfidenceRow label="関節カバレッジ" value={quality.keypointCoverage === null ? '計測不可' : `${quality.keypointCoverage}%`} />
+        <ConfidenceRow label="明るさ" value={scoreValue(quality.brightnessScore)} />
+        <ConfidenceRow label="ブレの少なさ" value={scoreValue(quality.blurScore)} />
       </dl>
-      {quality.warnings.length > 0 && (
-        <ul className="m-0 mt-2 list-none space-y-1 p-0">
-          {quality.warnings.map((w, i) => (
-            <li key={i} className="text-[11px] leading-relaxed" style={{ color: '#facc15' }}>
-              ⚠ {w}
-            </li>
-          ))}
-        </ul>
-      )}
     </Card>
   )
 }

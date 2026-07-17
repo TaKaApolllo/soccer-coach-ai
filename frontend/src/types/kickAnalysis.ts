@@ -1,4 +1,4 @@
-import { PoseAnalysisResponse, PoseFrame, PoseResult } from './index'
+import { PoseAnalysisResponse, PoseFrame, PoseResult, StoredCaptureQuality } from './index'
 import { IDEAL_ANGLE_RANGES } from '../constants/idealForm'
 
 // =====================================================================
@@ -61,11 +61,17 @@ export interface CaptureQuality {
   cameraView: CameraView
   fullBodyVisible: boolean
   singlePersonDetected: boolean
-  /** 0-100。現行 API では未計測のため null */
+  /** 人物サイズの適正度 0-100（#22 拡張）。測定不能は null */
+  personScaleScore: number | null
+  /** 0-100。測定不能は null */
   brightnessScore: number | null
-  /** 0-100。現行 API では未計測のため null */
+  /** 0-100。測定不能は null */
   blurScore: number | null
+  /** 全身キーポイントカバレッジ 0-100（#22 拡張）。測定不能は null */
+  keypointCoverage: number | null
   warnings: string[]
+  /** 具体的な再撮影ガイダンス（#22 拡張） */
+  retakeInstructions: string[]
 }
 
 export interface MotionPhaseSegment {
@@ -349,11 +355,14 @@ function captureQualityFromResponse(
   detectionRate: number | null
 ): CaptureQuality {
   const warnings: string[] = []
+  const instructions: string[] = []
   if (resp.pose_error) warnings.push(resp.pose_error)
   if (detectionRate === null) {
-    warnings.push('骨格を検出できませんでした。横から全身が写るように撮影してください。')
+    warnings.push('骨格を検出できませんでした。')
+    instructions.push('横から全身（頭からつま先まで）が写るように撮影してください。')
   } else if (detectionRate < LOW_CONFIDENCE_DETECTION_RATE) {
-    warnings.push('骨格の検出率が低いため、結果は参考値です。明るい場所で横から全身を撮影すると精度が上がります。')
+    warnings.push('骨格の検出率が低いため、結果は参考値です。')
+    instructions.push('明るい場所で横から全身を撮影すると精度が上がります。')
   }
   return {
     score: detectionRate === null ? null : Math.round(detectionRate * 100),
@@ -363,13 +372,80 @@ function captureQualityFromResponse(
         : detectionRate >= LOW_CONFIDENCE_DETECTION_RATE
           ? 'available'
           : 'low_confidence',
-    cameraView: 'unknown', // 現行 API は撮影アングルを推定しない
+    cameraView: 'unknown', // 旧レコードは撮影アングル未推定
     fullBodyVisible: detectionRate !== null && detectionRate >= LOW_CONFIDENCE_DETECTION_RATE,
     singlePersonDetected: resp.pose !== null,
+    personScaleScore: null,
     brightnessScore: null,
     blurScore: null,
-    warnings
+    keypointCoverage: null,
+    warnings,
+    retakeInstructions: instructions
   }
+}
+
+const MEASUREMENT_STATUS_SET = new Set<string>(['available', 'low_confidence', 'unavailable'])
+const CAMERA_VIEW_SET = new Set<string>(['side', 'front', 'rear', 'diagonal', 'unknown'])
+
+function clampScore(v: number | null | undefined): number | null {
+  return typeof v === 'number' && v >= 0 && v <= 100 ? Math.round(v) : null
+}
+
+/** 解析時に保存された撮影品質評価（#22）→ 契約 CaptureQuality */
+function captureQualityFromStored(stored: StoredCaptureQuality): CaptureQuality {
+  return {
+    score: clampScore(stored.score),
+    status: MEASUREMENT_STATUS_SET.has(stored.status)
+      ? (stored.status as MeasurementStatus)
+      : 'unavailable',
+    cameraView: CAMERA_VIEW_SET.has(stored.camera_view)
+      ? (stored.camera_view as CameraView)
+      : 'unknown',
+    fullBodyVisible: stored.full_body_visible === true,
+    singlePersonDetected: stored.single_person_detected === true,
+    personScaleScore: clampScore(stored.person_scale_score),
+    brightnessScore: clampScore(stored.brightness_score),
+    blurScore: clampScore(stored.blur_score),
+    keypointCoverage: clampScore(stored.keypoint_coverage),
+    warnings: Array.isArray(stored.warnings) ? stored.warnings.map(String) : [],
+    retakeInstructions: Array.isArray(stored.retake_instructions)
+      ? stored.retake_instructions.map(String)
+      : []
+  }
+}
+
+/**
+ * 撮影品質評価をメトリクスへ反映する（バックエンド adapter と同一ロジック）。
+ * 角度制限ビュー・低信頼フレーム・キーポイント信頼度で
+ * confidence / measurementStatus を降格する。
+ */
+function applyQualityToMetrics(
+  metrics: KickMetric[],
+  stored: StoredCaptureQuality
+): KickMetric[] {
+  const confMap = stored.metric_confidences ?? {}
+  const restricted = stored.angle_metrics_restricted === true
+  const unreliable = new Set(
+    Array.isArray(stored.unreliable_frame_indices) ? stored.unreliable_frame_indices : []
+  )
+  return metrics.map((m) => {
+    if (m.unit !== 'deg') return m
+    let confidence = m.confidence
+    const kp = confMap[m.id]
+    if (typeof kp === 'number') {
+      confidence = Math.round(Math.min(confidence, Math.max(0, Math.min(1, kp))) * 1000) / 1000
+    }
+    const downgrade =
+      restricted ||
+      (m.frame !== undefined && unreliable.has(m.frame)) ||
+      confidence < LOW_CONFIDENCE_DETECTION_RATE
+    return {
+      ...m,
+      confidence,
+      measurementStatus:
+        downgrade && m.measurementStatus === 'available' ? 'low_confidence' : m.measurementStatus
+    }
+  })
 }
 
 /**
@@ -382,28 +458,59 @@ export function kickAnalysisFromPoseResponse(resp: PoseAnalysisResponse): KickAn
   const detectionRate = detected ? (pose.metrics.detection_rate ?? null) : null
   const confidence = detectionRate ?? 0
 
-  const status: AnalysisStatus = !detected
+  let status: AnalysisStatus = !detected
     ? 'low_confidence'
     : confidence < LOW_CONFIDENCE_DETECTION_RATE
       ? 'low_confidence'
       : 'completed'
 
-  const metrics = pose ? metricsFromPose(pose, confidence) : []
+  let metrics = pose ? metricsFromPose(pose, confidence) : []
   metrics.push(ballSpeedMetric(resp, confidence))
+
+  // 撮影品質評価（#22）が保存されていれば優先し、ゲーティングを適用
+  const stored = resp.capture_quality ?? null
+  let captureQuality: CaptureQuality
+  if (stored) {
+    captureQuality = captureQualityFromStored(stored)
+    if (stored.level === 'critical') {
+      status = 'failed'
+    } else if (stored.level === 'warning' && status === 'completed') {
+      status = 'low_confidence'
+    }
+    metrics = applyQualityToMetrics(metrics, stored)
+  } else {
+    captureQuality = captureQualityFromResponse(resp, detectionRate)
+  }
+
+  // 動画メタ（#22 で保存）。無い旧レコードは従来どおり duration のみ
+  const vm = resp.video_meta ?? null
+  const orientationValues: readonly VideoOrientation[] = ['landscape', 'portrait', 'unknown']
+  const video: VideoInfo = vm
+    ? {
+        durationMs:
+          vm.duration_ms ?? (resp.duration != null ? Math.round(resp.duration * 1000) : null),
+        fps: vm.fps,
+        width: vm.width,
+        height: vm.height,
+        orientation: orientationValues.includes(vm.orientation as VideoOrientation)
+          ? (vm.orientation as VideoOrientation)
+          : 'unknown'
+      }
+    : {
+        durationMs: resp.duration != null ? Math.round(resp.duration * 1000) : null,
+        fps: null,
+        width: null,
+        height: null,
+        orientation: 'unknown'
+      }
 
   return {
     schemaVersion: KICK_ANALYSIS_SCHEMA_VERSION,
     analysisId: resp.id,
     status,
     createdAt: resp.created_at,
-    video: {
-      durationMs: resp.duration != null ? Math.round(resp.duration * 1000) : null,
-      fps: null, // 現行 API は fps を返さない（frame_times から間接把握のみ）
-      width: null,
-      height: null,
-      orientation: 'unknown'
-    },
-    captureQuality: captureQualityFromResponse(resp, detectionRate),
+    video,
+    captureQuality,
     phases: pose ? phaseSegmentsFromFrames(pose.frames, pose.timeline, confidence) : [],
     scores: scoresFromPose(resp, pose),
     metrics,
@@ -616,9 +723,12 @@ export function parseKickAnalysisResult(data: unknown): KickAnalysisResult | nul
     cameraView: isOneOf(q.cameraView, CAMERA_VIEWS) ? q.cameraView : 'unknown',
     fullBodyVisible: q.fullBodyVisible === true,
     singlePersonDetected: q.singlePersonDetected === true,
+    personScaleScore: asNullableNumber(q.personScaleScore),
     brightnessScore: asNullableNumber(q.brightnessScore),
     blurScore: asNullableNumber(q.blurScore),
-    warnings: q.warnings
+    keypointCoverage: asNullableNumber(q.keypointCoverage),
+    warnings: q.warnings,
+    retakeInstructions: isStringArray(q.retakeInstructions) ? q.retakeInstructions : []
   }
 
   // phases / metrics（1件でも不正があれば契約違反として棄却）

@@ -38,24 +38,47 @@ function BannerShell({ tone, icon, title, children, testId, action }: BannerShel
   )
 }
 
+/** 再撮影ガイダンスの箇条書き（撮影品質評価 #22 由来） */
+function RetakeList({ instructions }: { instructions: string[] }) {
+  if (instructions.length === 0) return null
+  return (
+    <div data-testid="retake-instructions" className="mt-1">
+      <p className="m-0 font-semibold text-slate-200">📷 再撮影のポイント:</p>
+      <ul className="m-0 list-none space-y-0.5 p-0">
+        {instructions.map((inst, i) => (
+          <li key={i} className="pl-4 text-slate-200" style={{ textIndent: '-0.9em' }}>
+            ・{inst}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 interface LowConfidenceBannerProps {
   warnings: string[]
   detectionScore: number | null
+  /** 撮影品質評価による具体的な再撮影ガイダンス */
+  instructions: string[]
 }
 
 /** 信頼度不足（low_confidence）: 結果は表示しつつ、警告と改善方法を示す */
-export function LowConfidenceBanner({ warnings, detectionScore }: LowConfidenceBannerProps) {
+export function LowConfidenceBanner({ warnings, detectionScore, instructions }: LowConfidenceBannerProps) {
   return (
     <BannerShell tone="warn" icon="⚠️" title="解析の信頼度が低い結果です" testId="low-confidence-banner">
-      {detectionScore !== null && (
-        <p className="m-0">骨格検出率: {detectionScore}%（50% 未満のため、数値は参考値としてご覧ください）</p>
+      {detectionScore !== null && detectionScore < 50 && (
+        <p className="m-0">骨格検出率: {detectionScore}%（数値は参考値としてご覧ください）</p>
       )}
       {warnings.map((w, i) => (
         <p key={i} className="m-0">{w}</p>
       ))}
-      <p className="m-0 font-semibold text-slate-200">
-        次にやること: 明るい場所で、横から全身（頭からつま先まで）が写るように撮影して再解析してください。
-      </p>
+      {instructions.length > 0 ? (
+        <RetakeList instructions={instructions} />
+      ) : (
+        <p className="m-0 font-semibold text-slate-200">
+          次にやること: 明るい場所で、横から全身（頭からつま先まで）が写るように撮影して再解析してください。
+        </p>
+      )}
     </BannerShell>
   )
 }
@@ -64,10 +87,12 @@ interface FailedPanelProps {
   message: string
   hint: string
   onRetry: () => void
+  /** 撮影品質評価による具体的な再撮影ガイダンス */
+  instructions?: string[]
 }
 
 /** 解析失敗（failed）: エラー内容 + 再試行 + 次の行動 */
-export function FailedPanel({ message, hint, onRetry }: FailedPanelProps) {
+export function FailedPanel({ message, hint, onRetry, instructions = [] }: FailedPanelProps) {
   return (
     <BannerShell
       tone="error"
@@ -87,7 +112,11 @@ export function FailedPanel({ message, hint, onRetry }: FailedPanelProps) {
       }
     >
       <p className="m-0">{message}</p>
-      <p className="m-0 font-semibold text-slate-200">次にやること: {hint}</p>
+      {instructions.length > 0 ? (
+        <RetakeList instructions={instructions} />
+      ) : (
+        <p className="m-0 font-semibold text-slate-200">次にやること: {hint}</p>
+      )}
     </BannerShell>
   )
 }
