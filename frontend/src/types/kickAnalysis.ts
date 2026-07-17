@@ -411,3 +411,261 @@ export function kickAnalysisFromPoseResponse(resp: PoseAnalysisResponse): KickAn
     history: []
   }
 }
+
+// =====================================================================
+// ランタイムバリデーション（バックエンド v1.0 応答の受信ガード）
+//
+// バックエンドは Pydantic で検証済みの応答を返すが、フロントは
+// 「不正レスポンスを受信してもクラッシュしない」ことを保証するため、
+// 信頼境界で構造検証を行う。検証に失敗したら null を返し、呼び出し側
+// （サービス層）が旧 API へのフォールバック or エラー状態遷移を行う。
+// =====================================================================
+
+const ANALYSIS_STATUSES: readonly AnalysisStatus[] = [
+  'queued', 'processing', 'completed', 'low_confidence', 'failed'
+]
+const MEASUREMENT_STATUSES: readonly MeasurementStatus[] = [
+  'available', 'low_confidence', 'unavailable'
+]
+const METRIC_STATUSES: readonly MetricStatus[] = [
+  'excellent', 'good', 'warning', 'poor', 'unknown'
+]
+const CAMERA_VIEWS: readonly CameraView[] = ['side', 'front', 'rear', 'diagonal', 'unknown']
+const PHASE_TYPES: readonly MotionPhaseType[] = [
+  'approach', 'backswing', 'support_plant', 'impact', 'follow_through'
+]
+const SEVERITIES: readonly FeedbackSeverity[] = ['high', 'mid', 'low']
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function isOneOf<T extends string>(v: unknown, options: readonly T[]): v is T {
+  return typeof v === 'string' && (options as readonly string[]).includes(v)
+}
+
+function isNullableNumber(v: unknown): v is number | null {
+  return v === null || v === undefined || typeof v === 'number'
+}
+
+function asNullableNumber(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function isConfidence(v: unknown): v is number {
+  return typeof v === 'number' && v >= 0 && v <= 1
+}
+
+function isNullableScore(v: unknown): boolean {
+  return v === null || v === undefined || (typeof v === 'number' && v >= 0 && v <= 100)
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((s) => typeof s === 'string')
+}
+
+function parsePhase(v: unknown): MotionPhaseSegment | null {
+  if (!isRecord(v)) return null
+  if (!isOneOf(v.type, PHASE_TYPES)) return null
+  const { startFrame, peakFrame, endFrame } = v
+  if (
+    typeof startFrame !== 'number' || startFrame < 0 ||
+    typeof peakFrame !== 'number' || peakFrame < 0 ||
+    typeof endFrame !== 'number' || endFrame < 0 ||
+    !isConfidence(v.confidence)
+  ) {
+    return null
+  }
+  return {
+    type: v.type,
+    startFrame,
+    peakFrame,
+    endFrame,
+    confidence: v.confidence
+  }
+}
+
+function parseMetric(v: unknown): KickMetric | null {
+  if (!isRecord(v)) return null
+  if (typeof v.id !== 'string' || typeof v.label !== 'string' || typeof v.unit !== 'string') return null
+  if (!isNullableNumber(v.value)) return null
+  if (!isConfidence(v.confidence)) return null
+  if (!isOneOf(v.status, METRIC_STATUSES)) return null
+  if (!isOneOf(v.measurementStatus, MEASUREMENT_STATUSES)) return null
+
+  let idealRange: IdealRange | undefined
+  if (v.idealRange !== null && v.idealRange !== undefined) {
+    if (!isRecord(v.idealRange)) return null
+    const { min, max } = v.idealRange
+    if (typeof min !== 'number' || typeof max !== 'number') return null
+    idealRange = { min, max }
+  }
+  return {
+    id: v.id,
+    label: v.label,
+    value: asNullableNumber(v.value),
+    unit: v.unit,
+    frame: typeof v.frame === 'number' ? v.frame : undefined,
+    phase: isOneOf(v.phase, PHASE_TYPES) ? v.phase : undefined,
+    idealRange,
+    confidence: v.confidence,
+    status: v.status,
+    measurementStatus: v.measurementStatus
+  }
+}
+
+function parseFeedback(v: unknown): KickFeedback | null {
+  if (!isRecord(v)) return null
+  if (!isStringArray(v.strengths)) return null
+  if (!Array.isArray(v.priorities) || !Array.isArray(v.drills)) return null
+
+  const priorities: FeedbackPriority[] = []
+  for (const p of v.priorities) {
+    if (!isRecord(p)) return null
+    if (
+      typeof p.rank !== 'number' ||
+      typeof p.label !== 'string' ||
+      typeof p.issue !== 'string' ||
+      typeof p.advice !== 'string' ||
+      !isOneOf(p.severity, SEVERITIES)
+    ) {
+      return null
+    }
+    priorities.push({
+      rank: p.rank,
+      label: p.label,
+      issue: p.issue,
+      advice: p.advice,
+      severity: p.severity,
+      relatedMetricId: typeof p.relatedMetricId === 'string' ? p.relatedMetricId : undefined
+    })
+  }
+
+  const drills: RecommendedDrill[] = []
+  for (const d of v.drills) {
+    if (!isRecord(d)) return null
+    if (typeof d.id !== 'string' || typeof d.title !== 'string' ||
+        typeof d.focus !== 'string' || typeof d.tag !== 'string') {
+      return null
+    }
+    drills.push({
+      id: d.id,
+      title: d.title,
+      focus: d.focus,
+      durationMinutes: asNullableNumber(d.durationMinutes),
+      tag: d.tag
+    })
+  }
+  return { strengths: v.strengths, priorities, drills }
+}
+
+function parseHistoryEntry(v: unknown): KickHistoryEntry | null {
+  if (!isRecord(v)) return null
+  if (typeof v.analysisId !== 'string' || typeof v.createdAt !== 'string') return null
+  if (!isNullableScore(v.overallScore)) return null
+  return {
+    analysisId: v.analysisId,
+    createdAt: v.createdAt,
+    overallScore: asNullableNumber(v.overallScore),
+    thumbnailUrl: typeof v.thumbnailUrl === 'string' ? v.thumbnailUrl : null
+  }
+}
+
+/** KickHistoryEntry[] の受信ガード（不正要素は捨てる） */
+export function parseKickHistoryEntries(data: unknown): KickHistoryEntry[] {
+  if (!Array.isArray(data)) return []
+  return data
+    .map(parseHistoryEntry)
+    .filter((e): e is KickHistoryEntry => e !== null)
+}
+
+/**
+ * バックエンド v1.0 応答の構造検証。
+ * 契約違反があれば null（クラッシュさせず、呼び出し側でフォールバック）。
+ */
+export function parseKickAnalysisResult(data: unknown): KickAnalysisResult | null {
+  if (!isRecord(data)) return null
+  if (data.schemaVersion !== KICK_ANALYSIS_SCHEMA_VERSION) return null
+  if (typeof data.analysisId !== 'string' || typeof data.createdAt !== 'string') return null
+  if (!isOneOf(data.status, ANALYSIS_STATUSES)) return null
+
+  // video
+  if (!isRecord(data.video)) return null
+  const orientation: VideoOrientation = isOneOf(data.video.orientation, [
+    'landscape', 'portrait', 'unknown'
+  ] as const)
+    ? data.video.orientation
+    : 'unknown'
+  const video: VideoInfo = {
+    durationMs: asNullableNumber(data.video.durationMs),
+    fps: asNullableNumber(data.video.fps),
+    width: asNullableNumber(data.video.width),
+    height: asNullableNumber(data.video.height),
+    orientation
+  }
+
+  // captureQuality
+  const q = data.captureQuality
+  if (!isRecord(q)) return null
+  if (!isOneOf(q.status, MEASUREMENT_STATUSES)) return null
+  if (!isNullableScore(q.score)) return null
+  if (!isStringArray(q.warnings)) return null
+  const captureQuality: CaptureQuality = {
+    score: asNullableNumber(q.score),
+    status: q.status,
+    cameraView: isOneOf(q.cameraView, CAMERA_VIEWS) ? q.cameraView : 'unknown',
+    fullBodyVisible: q.fullBodyVisible === true,
+    singlePersonDetected: q.singlePersonDetected === true,
+    brightnessScore: asNullableNumber(q.brightnessScore),
+    blurScore: asNullableNumber(q.blurScore),
+    warnings: q.warnings
+  }
+
+  // phases / metrics（1件でも不正があれば契約違反として棄却）
+  if (!Array.isArray(data.phases) || !Array.isArray(data.metrics)) return null
+  const phases: MotionPhaseSegment[] = []
+  for (const p of data.phases) {
+    const parsed = parsePhase(p)
+    if (!parsed) return null
+    phases.push(parsed)
+  }
+  const metrics: KickMetric[] = []
+  for (const m of data.metrics) {
+    const parsed = parseMetric(m)
+    if (!parsed) return null
+    metrics.push(parsed)
+  }
+
+  // scores
+  const s = data.scores
+  if (!isRecord(s)) return null
+  const scoreKeys = ['overall', 'supportLeg', 'kickingLeg', 'upperBody', 'balance', 'followThrough'] as const
+  for (const k of scoreKeys) {
+    if (!isNullableScore(s[k])) return null
+  }
+  const scores: KickScores = {
+    overall: asNullableNumber(s.overall),
+    supportLeg: asNullableNumber(s.supportLeg),
+    kickingLeg: asNullableNumber(s.kickingLeg),
+    upperBody: asNullableNumber(s.upperBody),
+    balance: asNullableNumber(s.balance),
+    followThrough: asNullableNumber(s.followThrough)
+  }
+
+  const feedback = parseFeedback(data.feedback)
+  if (!feedback) return null
+
+  return {
+    schemaVersion: KICK_ANALYSIS_SCHEMA_VERSION,
+    analysisId: data.analysisId,
+    status: data.status,
+    createdAt: data.createdAt,
+    video,
+    captureQuality,
+    phases,
+    scores,
+    metrics,
+    feedback,
+    history: parseKickHistoryEntries(data.history)
+  }
+}

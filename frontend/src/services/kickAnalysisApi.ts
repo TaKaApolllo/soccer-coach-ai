@@ -4,7 +4,9 @@ import {
   AnalysisStatus,
   KickAnalysisResult,
   KickHistoryEntry,
-  kickAnalysisFromPoseResponse
+  kickAnalysisFromPoseResponse,
+  parseKickAnalysisResult,
+  parseKickHistoryEntries
 } from '../types/kickAnalysis'
 
 // =====================================================================
@@ -128,13 +130,44 @@ interface HistoryItemWithPayload {
   analysis: PoseAnalysisResponse
 }
 
+/** 旧 API 互換ペイロード（source）の最低限の形チェック */
+function isPoseSource(v: unknown): v is PoseAnalysisResponse {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    'pose' in v &&
+    typeof (v as { id?: unknown }).id === 'string'
+  )
+}
+
 /**
- * 解析結果を取得する。
- * analysisId 省略時は骨格解析系（pose）の最新 1 件。存在しなければ null。
+ * 契約 v1.0 エンドポイント（/api/v1/kick-analysis*）からの取得。
+ * 応答は受信時に構造検証し、契約違反なら null（呼び出し側で旧 API へ
+ * フォールバック）。ネットワーク/404 も null。
  */
-export async function getKickAnalysisResult(
-  analysisId?: string
-): Promise<KickAnalysisPayload | null> {
+async function fetchV1Result(analysisId?: string): Promise<KickAnalysisPayload | null> {
+  try {
+    const url = analysisId
+      ? `${API_BASE}/v1/kick-analysis/${analysisId}`
+      : `${API_BASE}/v1/kick-analysis/latest`
+    const res = await axios.get<unknown>(url, { params: { include_source: true } })
+    const body = res.data
+    if (typeof body !== 'object' || body === null) return null
+    const envelope = body as { analysis?: unknown; source?: unknown }
+    const analysis = parseKickAnalysisResult(envelope.analysis)
+    if (!analysis) return null
+    return {
+      analysis,
+      source: isPoseSource(envelope.source) ? envelope.source : null,
+      isSample: false
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 旧 API（/api/history*）+ クライアント側 adapter によるフォールバック */
+async function fetchLegacyResult(analysisId?: string): Promise<KickAnalysisPayload | null> {
   try {
     if (analysisId) {
       const res = await axios.get<HistoryItemWithPayload>(`${API_BASE}/history/${analysisId}`)
@@ -147,8 +180,39 @@ export async function getKickAnalysisResult(
   }
 }
 
-/** 解析履歴（キックフォーム系のみ）を新スキーマの履歴エントリで返す */
+/**
+ * 解析結果を取得する。
+ * 1) 契約 v1.0 エンドポイント（バックエンド側 Pydantic 検証 + 受信側
+ *    構造検証）を優先
+ * 2) 応答が不正・未実装（旧バックエンド）の場合は旧 API + クライアント
+ *    adapter へフォールバック
+ * 3) どちらも失敗なら null（呼び出し側は idle/サンプル表示へ遷移し、
+ *    クラッシュしない）
+ */
+export async function getKickAnalysisResult(
+  analysisId?: string
+): Promise<KickAnalysisPayload | null> {
+  const v1 = await fetchV1Result(analysisId)
+  if (v1) return v1
+  return fetchLegacyResult(analysisId)
+}
+
+/** 解析履歴。契約 v1.0 を優先し、不正・未実装なら旧 API へフォールバック */
 export async function getKickAnalysisHistory(limit = 8): Promise<KickHistoryEntry[]> {
+  try {
+    const res = await axios.get<unknown>(`${API_BASE}/v1/kick-analysis`, { params: { limit } })
+    const body = res.data
+    if (typeof body === 'object' && body !== null && 'items' in body) {
+      const entries = parseKickHistoryEntries((body as { items: unknown }).items)
+      if (entries.length > 0) return entries
+    }
+  } catch {
+    // フォールバックへ
+  }
+  return getLegacyHistory(limit)
+}
+
+async function getLegacyHistory(limit: number): Promise<KickHistoryEntry[]> {
   try {
     const res = await axios.get<{ analyses: AnalysisHistoryItem[] }>(`${API_BASE}/history`)
     return res.data.analyses

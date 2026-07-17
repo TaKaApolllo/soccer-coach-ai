@@ -168,6 +168,19 @@ function KickAnalysisPage() {
   // ---------------- 状態遷移ヘルパー ----------------
 
   const applyPayload = useCallback((p: KickAnalysisPayload) => {
+    if (p.analysis.status === 'failed') {
+      // バックエンドが構造化エラー（変換不能データ等）を返したケース
+      setState({
+        phase: 'failed',
+        message:
+          p.analysis.captureQuality.warnings[0] ?? '解析データを読み込めませんでした。',
+        hint: RETRY_HINT,
+        payload: SAMPLE_PAYLOAD
+      })
+      setShowDropzone(false)
+      setPlaying(false)
+      return
+    }
     setState(
       p.analysis.status === 'low_confidence'
         ? { phase: 'low_confidence', payload: p }
